@@ -1,0 +1,65 @@
+service: text-to-podcast
+
+custom: ${file(./config.js)}
+
+provider:
+  name: google
+  project: ${self:custom.gcpProjectName}
+  runtime: nodejs8
+  region: us-central1
+  credentials: ${self:custom.gcpCredentialsPath}
+
+plugins:
+  - serverless-google-cloudfunctions
+
+# needs more granular excluding in production as only the serverless provider npm
+# package should be excluded (and not the whole node_modules directory)
+package:
+  exclude:
+    - node_modules/**
+    - .git/**
+    - test-data/**
+    - .gitignore
+    - .eslintrc.yml
+
+functions:
+  data-from-url:
+    handler: dataFromUrl
+    events:
+      - event:
+          eventType: providers/cloud.pubsub/eventTypes/topic.publish
+          resource: projects/${self:provider.project}/topics/${self:custom.gcpPubSubUrlTopicName}
+  text-to-speech:
+    handler: textToSpeech
+    memorySize: 2048
+    timeout: 540s
+    events:
+      - event:
+          eventType: providers/cloud.pubsub/eventTypes/topic.publish
+          resource: projects/${self:provider.project}/topics/${self:custom.gcpPubSubTtsTopicName}
+  generate-podcast-rss:
+    handler: generatePodcastRss
+    events:
+      - event:
+          eventType: providers/cloud.storage/eventTypes/object.change
+          resource: projects/${self:provider.project}/buckets/${self:custom.gcpBucketName}
+
+resources:
+  resources:
+    # Enable required APIs
+    - type: deploymentmanager.v2.virtual.enableService
+      name: texttospeech-enable
+      properties:
+        consumerId: project:${self:provider.project}
+        serviceName: texttospeech.googleapis.com
+    # Create required resources
+    - type: storage.v1.bucket
+      name: ${self:custom.gcpBucketName}
+    - type: pubsub.v1.topic
+      name: ${self:custom.gcpPubSubTtsTopicName}
+      properties:
+        topic: ${self:custom.gcpPubSubTtsTopicName}
+    - type: pubsub.v1.topic
+      name: ${self:custom.gcpPubSubUrlTopicName}
+      properties:
+        topic: ${self:custom.gcpPubSubUrlTopicName}
