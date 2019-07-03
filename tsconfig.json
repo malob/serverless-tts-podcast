@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "preserveConstEnums": true,
+    "sourceMap": true,
+    "target": "es6",
+    "outDir": ".build",
+    "moduleResolution": "node",
+    "lib": ["es2018"],
+    "rootDir": "./",
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "resolveJsonModule": true
+  },
+  "exclude": ["node_modules"]
+}

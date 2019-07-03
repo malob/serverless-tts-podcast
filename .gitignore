@@ -3,6 +3,7 @@
 .env
 tmp
 .coveralls.yml
+.build
 
 # Google
 keyfile.json
@@ -37,4 +38,4 @@ node_modules
 .tmp
 
 # Config
-config.js
+config.json

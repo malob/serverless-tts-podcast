@@ -1,6 +1,6 @@
 service: text-to-podcast
 
-custom: ${file(./config.js)}
+custom: ${file(./config.json)}
 
 provider:
   name: google
@@ -11,9 +11,7 @@ provider:
 
 plugins:
   - serverless-google-cloudfunctions
-
-# needs more granular excluding in production as only the serverless provider npm
-# package should be excluded (and not the whole node_modules directory)
+  - serverless-plugin-typescript
 package:
   exclude:
     - node_modules/**
@@ -29,20 +27,20 @@ functions:
       - event:
           eventType: providers/cloud.pubsub/eventTypes/topic.publish
           resource: projects/${self:provider.project}/topics/${self:custom.gcpPubSubUrlTopicName}
-  text-to-speech:
-    handler: textToSpeech
-    memorySize: 2048
-    timeout: 540s
-    events:
-      - event:
-          eventType: providers/cloud.pubsub/eventTypes/topic.publish
-          resource: projects/${self:provider.project}/topics/${self:custom.gcpPubSubTtsTopicName}
-  generate-podcast-rss:
-    handler: generatePodcastRss
-    events:
-      - event:
-          eventType: providers/cloud.storage/eventTypes/object.change
-          resource: projects/${self:provider.project}/buckets/${self:custom.gcpBucketName}
+  # text-to-speech:
+  #   handler: textToSpeech
+  #   memorySize: 2048
+  #   timeout: 540s
+  #   events:
+  #     - event:
+  #         eventType: providers/cloud.pubsub/eventTypes/topic.publish
+  #         resource: projects/${self:provider.project}/topics/${self:custom.gcpPubSubTtsTopicName}
+  # generate-podcast-rss:
+  #   handler: generatePodcastRss
+  #   events:
+  #     - event:
+  #         eventType: providers/cloud.storage/eventTypes/object.change
+  #         resource: projects/${self:provider.project}/buckets/${self:custom.gcpBucketName}
 
 resources:
   resources:

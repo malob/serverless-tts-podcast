@@ -1,21 +1,36 @@
-env:
-  node: true
-extends: 'eslint:recommended'
+parser: '@typescript-eslint/parser'
+
 parserOptions:
-  sourceType: module
-  ecmaVersion: 8
+  project: ./tsconfig.json
+
+plugins:
+  - '@typescript-eslint'
+
+extends:
+  - 'eslint:recommended'
+  - 'plugin:@typescript-eslint/eslint-recommended'
+  - 'plugin:@typescript-eslint/recommended'
+
+# ESLint rules: https://eslint.org/docs/rules/
+# Typescript rules: https://github.com/typescript-eslint/typescript-eslint/tree/master/packages/eslint-plugin
 rules:
-  indent:
+  comma-style:
+    - error
+    - first
+  key-spacing:
+    - error
+    - align: colon
+  no-console: off
+  indent: off
+  '@typescript-eslint/indent':
     - error
     - 2
-  linebreak-style:
+    - ObjectExpression: 0
+  '@typescript-eslint/explicit-function-return-type':
+    - warn
+    - allowTypedFunctionExpressions: true
+      allowExpressions: true
+  # Ahhh why doesn't this work!!!
+  '@typescript-eslint/no-use-before-define':
     - error
-    - unix
-  quotes:
-    - error
-    - single
-  semi:
-    - error
-    - always
-  no-console:
-    - off
+    - functions: false
