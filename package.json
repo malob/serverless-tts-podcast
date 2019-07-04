@@ -1,8 +1,9 @@
 {
-  "name": "text-to-podcast",
+  "name": "serverless-tts-podcast",
   "version": "0.1.0",
   "description": "Cloud functions to create a podcast from text",
-  "main": "index.js",
+  "repository": "https://github.com/malob/serverless-tts-podcast",
+  "license": "ISC",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },

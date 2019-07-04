@@ -1,0 +1,13 @@
+{
+  "gcpCredentialsPath": "",
+  "gcpProjectName": "",
+  "gcpBucketName": "tts-podcast",
+  "gcpPubSubUrlTopicName": "",
+  "gcpPubSubTtsTopicName": "",
+  "podTitle": "My Text-To-Speech Podcast",
+  "podDescription": "My personal podcast of cool articles.",
+  "podSiteUrl": "",
+  "podAuthor": "",
+  "podLanguage": "en",
+  "podType": "episodic"
+}

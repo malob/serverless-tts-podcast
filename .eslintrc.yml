@@ -21,6 +21,10 @@ rules:
     - error
     - align: colon
   no-console: off
+  semi: off
+  '@typescript-eslint/semi':
+    - error
+    - never
   indent: off
   '@typescript-eslint/indent':
     - error
@@ -30,7 +34,10 @@ rules:
     - warn
     - allowTypedFunctionExpressions: true
       allowExpressions: true
-  # Ahhh why doesn't this work!!!
-  '@typescript-eslint/no-use-before-define':
-    - error
-    - functions: false
+  # can't do what I want with this because I define functions as variables
+  '@typescript-eslint/no-use-before-define': off
+  '@typescript-eslint/no-for-in-array': error
+
+  # Experimental
+  '@typescript-eslint/prefer-string-starts-ends-with': error
+  '@typescript-eslint/restrict-plus-operands': error
