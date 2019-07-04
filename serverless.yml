@@ -21,20 +21,20 @@ package:
     - .eslintrc.yml
 
 functions:
-  data-from-url:
-    handler: dataFromUrl
+  parse-webpage:
+    handler: parseWebpage
     events:
       - event:
           eventType: providers/cloud.pubsub/eventTypes/topic.publish
           resource: projects/${self:provider.project}/topics/${self:custom.gcpPubSubUrlTopicName}
-  # text-to-speech:
-  #   handler: textToSpeech
-  #   memorySize: 2048
-  #   timeout: 540s
-  #   events:
-  #     - event:
-  #         eventType: providers/cloud.pubsub/eventTypes/topic.publish
-  #         resource: projects/${self:provider.project}/topics/${self:custom.gcpPubSubTtsTopicName}
+  text-to-speech:
+    handler: textToSpeech
+    memorySize: 2048
+    timeout: 540s
+    events:
+      - event:
+          eventType: providers/cloud.pubsub/eventTypes/topic.publish
+          resource: projects/${self:provider.project}/topics/${self:custom.gcpPubSubTtsTopicName}
   # generate-podcast-rss:
   #   handler: generatePodcastRss
   #   events:

@@ -1,64 +1,62 @@
-// Node libraries
-//let fs;
-//let os;
-//let path;
-//let crypto;
+// Node imports
+import crypto from 'crypto'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 
-// Google APIs
+// Google APIs used throught
 import { PubSub, Topic } from '@google-cloud/pubsub'
-//let TextToSpeech;
-//const { Storage } = require('@google-cloud/storage');
+import { Storage, UploadOptions, UploadResponse } from '@google-cloud/storage'
 
+// Functional programming tools
+import { pipe } from 'fp-ts/lib/pipeable'
+import { flow } from 'fp-ts/lib/function'
+import { array } from 'fp-ts/lib/Array'
+import { error } from 'fp-ts/lib/Console'
+import * as E from 'fp-ts/lib/Either'
+import * as TE from 'fp-ts/lib/TaskEither'
 
-// Other npm packages
-//let chunkText;
-//let ffmpeg;
-//let ffmpegStatic;
-//let ffprobeStatic;
-//let rimraf;
-//let Podcast;
-
-// Config
+// Other imports used throught
+import Mercury from '@postlight/mercury-parser'
 import * as config from './config.json'
 
+// Interfaces used throught
+interface PubSubMessage {
+  data: string;
+}
+
+// Small helper functions
+const base64ToString = (s: string): string => Buffer.from(s, 'base64').toString()
+const stringToHash   = (s: string): string => crypto.createHash('md5').update(s).digest('hex')
 
 // -------------------------------------------------------------------------------------------------
 // Web article/post content and metadata extraction
 // -------------------------------------------------------------------------------------------------
 
 import * as htmlToText from 'html-to-text'
-import Mercury from '@postlight/mercury-parser' //eslint-disable-line
-
-// Interfaces and types
-interface PubSubMessage {
-  data: string;
-}
-
-type Url = string
 
 // Cloud function that recieves a url and returns text and metadata triggerd by PubSub message
-// TODO: Add lazy loading of imports into globals
-export const dataFromUrl = async (m: PubSubMessage): Promise<void> => {
+export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
   // Let
-  const url: string = Buffer.from(m.data, 'base64').toString()
-  const pubsub: Topic = (new PubSub()).topic(config.gcpPubSubTtsTopicName)
+  const url: string     = base64ToString(m.data)
+  const pubsub: Topic   = (new PubSub()).topic(config.gcpPubSubTtsTopicName)
+  const contentToBuffer = (x: Mercury.ParseResult): Buffer => Buffer.from(JSON.stringify(x))
   // In
-  await parseArticle(url)
-    .then(processMercuryResult)
-    .then(x => pubsub.publish(Buffer.from(JSON.stringify(x))))
+  await pipe(
+    TE.tryCatch( () => Mercury.parse(url), e => e ),
+    TE.chain   ( c  => c.content ? TE.right(c) : TE.left('Parser failed to find/process content.') ),
+    TE.map     ( flow(processMercuryResult, contentToBuffer) ), //eslint-disable-line
+    TE.chain   ( b  => TE.tryCatch(() => pubsub.publish(b), e => e) ),
+  )().then(
+    x => pipe(
+      x,
+      E.fold(e => error(e)(), () => {})
+    )
+  )
 }
 
-// Use Mercury Parser to get article consent and metadata
-const parseArticle = async (x: Url): Promise<Mercury.ParseResult> => {
-  const result: Mercury.ParseResult = await Mercury.parse(x)
-  if (!result.content) { Error('Mercury Parser could not find or process the article body.') }
-  return result
-}
-
-// Mercury API returns article content as HTML, so I use html-to-text to
-// to convert the HTML to plain text.
-// TODO: Lots of data mutation here, don't like it
-const processMercuryResult = async (x: Mercury.ParseResult): Promise<Mercury.ParseResult> => {
+// Helper function to prcoess consent into needed form
+const processMercuryResult = (x: Mercury.ParseResult): Mercury.ParseResult => {
   //Let
   const htmlToTextOptions: HtmlToTextOptions =
     { wordwrap               : null
@@ -84,140 +82,107 @@ const processMercuryResult = async (x: Mercury.ParseResult): Promise<Mercury.Par
 // Text to speech conversion
 // -------------------------------------------------------------------------------------------------
 
-// Cloud function that receives text and metadata and creates TTS audo file
-// triggerd by PubSub message
-//exports.textToSpeech = async (data) => {
-//  // Lazyly load dependencies
-//  fs = require('fs');
-//  os = require('os');
-//  path = require('path');
-//  crypto = require('crypto');
+import TextToSpeech from '@google-cloud/text-to-speech'
+import { SynthesizeSpeechRequest, SynthesizeSpeechResponse } from '@google-cloud/text-to-speech'
 
-//  TextToSpeech = require('@google-cloud/text-to-speech');
+const chunkText = require('chunk-text') //eslint-disable-line
+import rimraf from 'rimraf'
+import ffmpeg from 'fluent-ffmpeg'
+import ffmpegStatic from 'ffmpeg-static'
+import ffprobeStatic from 'ffprobe-static'
 
-//  chunkText = require('chunk-text');
-//  ffmpeg = require('fluent-ffmpeg');
-//  ffmpegStatic = require('ffmpeg-static');
-//  ffprobeStatic = require('ffprobe-static');
-//  rimraf = require('rimraf');
+// Cloud function that receives text and metadata and creates TTS audo file triggerd by PubSub message
+exports.textToSpeech = async (m: PubSubMessage): Promise<void> => {
+  // Let
+  const contentData: Mercury.ParseResult = JSON.parse(base64ToString(m.data))
+  const chunkedContent: string[]         = chunkText(contentData.content, 5000) //5000 chars is the TTS API limit
+  const workingDirName: string           = stringToHash(contentData.url)
+  const workingDirPath: string           = path.join(os.tmpdir(), workingDirName)
 
-//  // Get text data from PubSub message and chunk text
-//  const textData = JSON.parse(Buffer.from(data.data, 'base64').toString());
-//  const text = chunkText(textData.content, 5000);
+  // In
+  await pipe(
+    TE.taskify(rimraf)(workingDirPath),
+    TE.chain  ( ()  => TE.taskify(fs.mkdir)(workingDirPath) ),
+    TE.chain  ( ()  => array.traverse(TE.taskEither)(chunkedContent, getTtsAudio) ),
+    TE.chain  ( as  => array.traverseWithIndex(TE.taskEither)(as, (i, x) => writeChunckAudioFile(workingDirPath, i, x)) ),
+    TE.chain  ( fps => concatAudioFiles(fps, workingDirPath) ),
+    TE.chain  ( fp  => createGcsObject(fp, contentData) )
+  )().then(x => console.log(x))
+}
 
-//  // Create working directory and run TTS in parallel
-//  try {
-//    var temp = await Promise.parallel([
-//      mkWorkingDir(crypto.createHash('md5').update(textData.url).digest('hex')),
-//      Promise.map(text, getTtsAudio)
-//    ]);
-//  } catch (err) {
-//    console.error('Failed:\n', err);
-//    return;
-//  }
-//  const workingDir = temp[0];
-//  const audio = temp[1];
+const getTtsAudio = (s: string): TE.TaskEither<any, [SynthesizeSpeechResponse]> => {
+  // Let
+  const ttsClient = new TextToSpeech.TextToSpeechClient()
+  const ttsRequest: SynthesizeSpeechRequest =
+    { input      : { text: s }
+    , voice      : { languageCode: 'en-US', name: 'en-US-Wavenet-F', ssmlGender: 'FEMALE' }
+    , audioConfig: { audioEncoding: 'MP3', effectsProfileId: ['headphone-class-device'] }
+    }
+  // In
+  return TE.tryCatch(() => ttsClient.synthesizeSpeech(ttsRequest), e => e)
+}
 
-//  // Write audio files to disk
-//  const filePaths = await Promise
-//    .each(audio, (audioData, index) => {
-//      const filePath = path.join(workingDir, `${index + 1000}.mp3`);
-//      fs.writeFileSync(filePath, audioData, 'binary');
-//    })
-//    .then(() => Promise.promisify(fs.readdir)(workingDir))
-//    .then(files => { return files.sort(); })
-//    .then(files => { return files.map((x) => { return path.join(workingDir, x); }); })
-//    .catch(err => {
-//      console.error('Failed writing files to disk', err);
-//      return Promise.promisify(rimraf)(workingDir);
-//    });
+const writeChunckAudioFile = (p: string, i: number, a: [SynthesizeSpeechResponse]): TE.TaskEither<NodeJS.ErrnoException, string> => {
+  // Let
+  const filePath = path.join(p, `${i + 1000}.mp3`)
+  // In
+  return pipe(
+    TE.taskify<string, Buffer, string, NodeJS.ErrnoException, void>(fs.writeFile)(filePath, a[0].audioContent, 'binary'),
+    TE.map( () => filePath)
+  )
+}
 
-//  // Concatenate audio files into a single file
-//  const singleFilePath = await concatAudioFiles(filePaths, workingDir);
+// Used to concatenate audio files with ffmpeg and returns the path to the concatenated file
+const concatAudioFiles = (filePaths: string[], workingDir: string): TE.TaskEither<unknown, string> => {
+  if (filePaths.length == 1) { return TE.taskEither.of(filePaths[0]) }
+  else {
+    // Let
+    const ffmpegCmd = ffmpeg()
+    const singleFilePath = path.join(workingDir, 'audio.mp3')
+    filePaths.forEach(x => ffmpegCmd.input(x))
+    const ffmpegPromise = new Promise<string>((resolve, reject) => {
+      ffmpegCmd
+        .setFfmpegPath(ffmpegStatic.path)
+        .setFfprobePath(ffprobeStatic.path)
+        .on('error', err => reject(Error(err)))
+        .on('end'  , ()  => resolve(singleFilePath))
+        .mergeToFile(singleFilePath);
+    });
 
-//  // Send audio file to GCS
-//  return await createGcsObject(textData, singleFilePath)
-//    .then(() => {
-//      console.log('File successfully sent to GCS:\n');
-//    })
-//    .catch(err => {
-//      console.error('Failed to send to GCS:\n', err);
-//      return Promise.promisify(rimraf)(workingDir);
-//    });
-//};
+    // In
+    return TE.tryCatch(() => ffmpegPromise, (e: unknown) => e)
 
-////Create working directory
-//async function mkWorkingDir(name) {
-//  const workingDir = path.join(os.tmpdir(), name);
+  }
+}
 
-//  return await Promise.promisify(rimraf)(workingDir)
-//    .then(() => Promise.promisify(fs.mkdir)(workingDir))
-//    .then(() => { return workingDir; });
-//}
+// Used to send concatenated audio file to Google Cloud Storage
+const createGcsObject = (fp: string, c: Mercury.ParseResult): TE.TaskEither<unknown, UploadResponse> => {
+  // Let
+  const bucket = (new Storage()).bucket(config.gcpBucketName)
+  const hash = stringToHash(c.url)
+  const objectOptions: UploadOptions =
+    { destination: hash + '.mp3'
+    , public     : true
+    , metadata   :
+      { contentType: 'audio/mpeg'
+      , metadata   :
+        { title        : c.title
+        , author       : c.author
+        , excerpt      : c.excerpt
+        , url          : c.url
+        , datePublished: c.date_published
+        , leadImageUrl : c.lead_image_url
+        }
+      }
+    }
 
-//// Uses Googles Text-To-Speech API to generate audio from text
-//async function getTtsAudio(str) {
-//  const ttsClient = new TextToSpeech.TextToSpeechClient();
-//  const ttsRequest = {
-//    input: { text: str },
-//    voice: { languageCode: 'en-US', name: 'en-US-Wavenet-F', ssmlGender: 'FEMALE' },
-//    audioConfig: { audioEncoding: 'MP3', effectsProfileId: 'headphone-class-device' },
-//  };
+  // In
+  return TE.tryCatch( () => bucket.upload(fp, objectOptions), e => e)
+}
 
-//  return await new Promise((resolve, reject) => {
-//    ttsClient.synthesizeSpeech(ttsRequest, (err, response) => {
-//      if (response) { resolve(response.audioContent); }
-//      else { reject(Error(err)); }
-//    });
-//  });
-//}
-
-//// Used to concatenate audio files with ffmpeg and returns the path to the concatenated file
-//async function concatAudioFiles(filePaths, workingDir) {
-//  if (filePaths.length == 1) { return filePaths[0]; }
-//  else {
-//    var ffmpegCmd = ffmpeg();
-//    const singleFilePath = path.join(workingDir, 'audio.mp3');
-
-//    filePaths.forEach((x) => { ffmpegCmd.input(x); });
-
-//    return await new Promise((resolve, reject) => {
-//      ffmpegCmd
-//        .setFfmpegPath(ffmpegStatic.path)
-//        .setFfprobePath(ffprobeStatic.path)
-//        .on('error', (err) => { reject(Error(err)); })
-//        .on('end', () => { resolve(singleFilePath); })
-//        .mergeToFile(singleFilePath, workingDir);
-//    });
-//  }
-//}
-
-//// Used to send concatenated audio file to Google Cloud Storage
-//async function createGcsObject(textData, audioPath) {
-//  const storage = new Storage();
-
-//  // Hash article URL to to use as Object name
-//  const hash = crypto.createHash('md5').update(textData.url).digest('hex');
-
-//  const objectOptions = {
-//    destination: hash + '.mp3',
-//    public: true,
-//    metadata: {
-//      contentType: 'audio/mpeg',
-//      metadata: {
-//        title: textData.title,
-//        author: textData.author,
-//        excerpt: textData.excerpt,
-//        url: textData.url,
-//        datePublished: textData.date_published,
-//        leadImageUrl: textData.lead_image_url
-//      }
-//    }
-//  };
-
-//  return await storage.bucket(config().gcpBucketName).upload(audioPath, objectOptions);
-//}
-
+// -------------------------------------------------------------------------------------------------
+// Podcast feed generation
+// -------------------------------------------------------------------------------------------------
 
 
 //// Cloud function to generate RSS feed for podcast

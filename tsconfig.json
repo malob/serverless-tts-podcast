@@ -2,7 +2,7 @@
   "compilerOptions": {
     "preserveConstEnums": true,
     "sourceMap": true,
-    "target": "es6",
+    "target": "es5",
     "outDir": ".build",
     "moduleResolution": "node",
     "lib": ["es2018"],
@@ -13,7 +13,8 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "esModuleInterop": true
   },
   "exclude": ["node_modules"]
 }
