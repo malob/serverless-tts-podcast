@@ -1,9 +1,9 @@
 // Node imports
-import crypto from 'crypto'
-import fs from 'fs'
-import os from 'os'
+import { createHash } from 'crypto'
+import { mkdir, writeFile } from 'fs'
+import { tmpdir } from 'os'
 import path from 'path'
-import util from 'util'
+import { promisify } from 'util'
 
 // Google APIs used throught
 import { PubSub, Topic } from '@google-cloud/pubsub'
@@ -33,8 +33,10 @@ type Hash     = string
 type Url      = string
 
 // Small helper functions
-const base64ToString = (s: string): string => Buffer.from(s, 'base64').toString()
-const stringToHash   = (s: string): Hash => crypto.createHash('md5').update(s).digest('hex')
+const base64Decode        = (s: string): string => Buffer.from(s, 'base64').toString()
+const stringToHash        = (s: string): Hash => createHash('md5').update(s).digest('hex')
+const traverseTE          = array.traverse(TE.taskEither)
+const traverseWithIndexTE = array.traverseWithIndex(TE.taskEither)
 
 // -------------------------------------------------------------------------------------------------
 // Web article/post content and metadata extraction
@@ -52,7 +54,7 @@ type ParseError =
 // Cloud function triggered by a PubSubMessage that recieves a url and returns content and metadata.
 export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
   // Let
-  const url: Url        = base64ToString(m.data)
+  const url: Url        = base64Decode(m.data)
   const pubsub: Topic   = (new PubSub()).topic(config.gcpPubSubTtsTopicName)
   const contentToBuffer = (x: Mercury.ParseResult): Buffer => Buffer.from(JSON.stringify(x))
 
@@ -62,22 +64,23 @@ export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
     TE.chain   ( c  => c.content ? TE.right(c) : TE.left<ParseError>('EmptyBody') ),
     TE.map     ( flow(processMercuryResult, contentToBuffer) ),
     TE.chain   ( b  => TE.tryCatch(() => pubsub.publish(b), (): ParseError => 'PubSub') ),
-  )().then(x =>
-    pipe(
-      x,
-      E.fold(
-        e => {
-          switch(e) {
-          case 'MercuryParser': error('Error: while trying to parse webpage.')(); break
-          case 'EmptyBody'    : error('Error: no body consent returned by parser.')(); break
-          case 'PubSub'       : error('Error: failed to send message to TTS function.')(); break
-          default             : error('Somehow and error occured that wasn\'t accounted for.')
-          }
-        },
-        () => {}
+  )()
+    .then(x =>
+      pipe(
+        x,
+        E.fold(
+          e => {
+            switch(e) {
+            case 'MercuryParser': error('Error while trying to parse webpage.')(); break
+            case 'EmptyBody'    : error('Error, no body consent returned by parser.')(); break
+            case 'PubSub'       : error('Error, failed to send message to TTS function.')(); break
+            default             : error('Somehow and error occured that wasn\'t accounted for.')
+            }
+          },
+          () => {}
+        )
       )
     )
-  )
 }
 
 // Helper function to prcoess consent into needed form
@@ -115,7 +118,7 @@ const chunkText = require('chunk-text') //eslint-disable-line
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegStatic from 'ffmpeg-static'
 import ffprobeStatic from 'ffprobe-static'
-import rimraf from 'rimraf'
+import rmrf from 'rimraf'
 
 // Error type for this cloud function
 type TTSError =
@@ -125,42 +128,48 @@ type TTSError =
   | 'WriteAudioChuck'
   | 'WriteAudioFile'
   | 'BucketWrite'
+  | 'RmWorkingDirEnd'
 
 // Cloud function triggered by PubSub message that receives consent and metadata and creates TTS audio file.
 export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
   // Let
-  const contentData: Mercury.ParseResult = JSON.parse(base64ToString(m.data))
+  const contentData: Mercury.ParseResult = JSON.parse(base64Decode(m.data))
   const chunkedContent: string[]         = chunkText(contentData.content, 5000) //5000 chars is the TTS API limit
   const workingDirName: string           = stringToHash(contentData.url)
-  const workingDirPath: DirPath          = path.join(os.tmpdir(), workingDirName)
+  const workingDirPath: DirPath          = path.join(tmpdir(), workingDirName)
+  const removeWorkingDir = (x: TTSError): TE.TaskEither<TTSError, void> =>
+    TE.tryCatch( ()  => promisify(rmrf)(workingDirPath), (): TTSError => x )
 
   // In
   await pipe(
-    TE.tryCatch( ()  => util.promisify(rimraf)(workingDirPath), (): TTSError => 'RmWorkingDir' ),
-    TE.chain   ( ()  => TE.tryCatch(() => util.promisify(fs.mkdir)(workingDirPath), (): TTSError => 'MkWoringDir') ),
-    TE.chain   ( ()  => array.traverse(TE.taskEither)(chunkedContent, getTtsAudio) ),
-    TE.chain   ( as  => array.traverseWithIndex(TE.taskEither)(as, (i, x) => writeChunckAudioFile(workingDirPath, i, x)) ),
+    removeWorkingDir('RmWorkingDir'),
+    TE.chain   ( ()  => TE.tryCatch(() => promisify(mkdir)(workingDirPath), (): TTSError => 'MkWoringDir') ),
+    TE.chain   ( ()  => traverseTE(chunkedContent, getTtsAudio) ),
+    TE.chain   ( as  => traverseWithIndexTE(as, (i, x) => writeChunckAudioFile(workingDirPath, i, x)) ),
     TE.chain   ( fps => concatAudioFiles(fps, workingDirPath) ),
     TE.chain   ( fp  => createGcsObject(fp, contentData) )
-  )().then(x =>
-    pipe(
-      x,
-      E.fold(
-        e => {
-          switch(e) {
-          case 'RmWorkingDir'   : error('Error while trying to remove old working directory.')(); break
-          case 'MkWoringDir'    : error('Error creating working directory.')(); break
-          case 'TTSConversion'  : error('Error during TTS conversion step.')(); break
-          case 'WriteAudioChuck': error('Error writing an audio chunk to disk.')(); break
-          case 'WriteAudioFile' : error('Error concatinating audio chunk.')(); break
-          case 'BucketWrite'    : error('Error writing file to bucket.'); break
-          default               : error('Somehow and error occured that wasn\'t accounted for.')
-          }
-        },
-        () => {}
+  )()
+    .then(x =>
+      pipe(
+        x,
+        E.fold(
+          e => {
+            switch(e) {
+            case 'RmWorkingDir'   : error('Error while trying to remove old working directory.')(); break
+            case 'MkWoringDir'    : error('Error creating working directory.')(); break
+            case 'TTSConversion'  : error('Error during TTS conversion step.')(); break
+            case 'WriteAudioChuck': error('Error writing an audio chunk to disk.')(); break
+            case 'WriteAudioFile' : error('Error concatinating audio chunk.')(); break
+            case 'BucketWrite'    : error('Error writing file to bucket.'); break
+            default               : error('Somehow and error occured that wasn\'t accounted for.')
+            }
+          },
+          () => {}
+        )
       )
     )
-  )
+    .then( () => removeWorkingDir('RmWorkingDirEnd')() )
+    .then( x  => pipe( x, E.fold( () => error('Error cleaning up working directory')(), () => {} )) )
 }
 
 // Helper function that creates creates a TaskEither to convert a string to audio.
@@ -184,7 +193,7 @@ const writeChunckAudioFile = (d: DirPath, i: number, a: [SynthesizeSpeechRespons
 
   // In
   return pipe(
-    TE.tryCatch( () => util.promisify(fs.writeFile)(filePath, a[0].audioContent, 'binary'), (): TTSError => 'WriteAudioChuck' ),
+    TE.tryCatch( () => promisify(writeFile)(filePath, a[0].audioContent, 'binary'), (): TTSError => 'WriteAudioChuck' ),
     TE.map     ( () => filePath)
   )
 }
