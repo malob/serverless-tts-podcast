@@ -12,10 +12,12 @@ import { Storage, UploadOptions, UploadResponse } from '@google-cloud/storage'
 // Functional programming tools
 import { pipe } from 'fp-ts/lib/pipeable'
 import { flow } from 'fp-ts/lib/function'
-import { array } from 'fp-ts/lib/Array'
+import { sequenceT } from 'fp-ts/lib/Apply'
 import { error } from 'fp-ts/lib/Console'
 import * as E from 'fp-ts/lib/Either'
+import { NonEmptyArray, nonEmptyArray, head } from 'fp-ts/lib/NonEmptyArray'
 import * as TE from 'fp-ts/lib/TaskEither'
+import { snd } from 'fp-ts/lib/Tuple'
 
 // Other imports used throught
 import Mercury from '@postlight/mercury-parser'
@@ -35,8 +37,8 @@ type Url      = string
 // Small helper functions
 const base64Decode        = (s: string): string => Buffer.from(s, 'base64').toString()
 const stringToHash        = (s: string): Hash => createHash('md5').update(s).digest('hex')
-const traverseTE          = array.traverse(TE.taskEither)
-const traverseWithIndexTE = array.traverseWithIndex(TE.taskEither)
+const traverseTE          = nonEmptyArray.traverse(TE.taskEither)
+const traverseWithIndexTE = nonEmptyArray.traverseWithIndex(TE.taskEither)
 
 // -------------------------------------------------------------------------------------------------
 // Web article/post content and metadata extraction
@@ -133,21 +135,25 @@ type TTSError =
 // Cloud function triggered by PubSub message that receives consent and metadata and creates TTS audio file.
 export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
   // Let
-  const contentData: Mercury.ParseResult = JSON.parse(base64Decode(m.data))
-  const chunkedContent: string[]         = chunkText(contentData.content, 5000) //5000 chars is the TTS API limit
-  const workingDirName: string           = stringToHash(contentData.url)
-  const workingDirPath: DirPath          = path.join(tmpdir(), workingDirName)
-  const removeWorkingDir = (x: TTSError): TE.TaskEither<TTSError, void> =>
+  const contentData: Mercury.ParseResult      = JSON.parse(base64Decode(m.data))
+  const chunkedContent: NonEmptyArray<string> = chunkText(contentData.content, 5000) //5000 chars is the TTS API limit
+  const workingDirName: string                = stringToHash(contentData.url)
+  const workingDirPath: DirPath               = path.join(tmpdir(), workingDirName)
+  const removeWorkingDir                      = (x: TTSError): TE.TaskEither<TTSError, void> =>
     TE.tryCatch( ()  => promisify(rmrf)(workingDirPath), (): TTSError => x )
 
   // In
   await pipe(
-    removeWorkingDir('RmWorkingDir'),
-    TE.chain   ( ()  => TE.tryCatch(() => promisify(mkdir)(workingDirPath), (): TTSError => 'MkWoringDir') ),
-    TE.chain   ( ()  => traverseTE(chunkedContent, getTtsAudio) ),
-    TE.chain   ( as  => traverseWithIndexTE(as, (i, x) => writeChunckAudioFile(workingDirPath, i, x)) ),
-    TE.chain   ( fps => concatAudioFiles(fps, workingDirPath) ),
-    TE.chain   ( fp  => createGcsObject(fp, contentData) )
+    sequenceT(TE.taskEither)(
+      pipe(
+        removeWorkingDir('RmWorkingDir'),
+        TE.chain( ()  => TE.tryCatch(() => promisify(mkdir)(workingDirPath), (): TTSError => 'MkWoringDir') )
+      ),
+      traverseTE(chunkedContent, getTtsAudio)
+    ),
+    TE.chain( t   => traverseWithIndexTE(snd(t), (i, x) => writeChunkAudioFile(workingDirPath, i, x)) ),
+    TE.chain( fps => concatAudioFiles(fps, workingDirPath) ),
+    TE.chain( fp  => createGcsObject(fp, contentData) )
   )()
     .then(x =>
       pipe(
@@ -173,7 +179,7 @@ export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
 }
 
 // Helper function that creates creates a TaskEither to convert a string to audio.
-const getTtsAudio = (s: string): TE.TaskEither<TTSError, [SynthesizeSpeechResponse]> => {
+const getTtsAudio = (s: string): TE.TaskEither<TTSError, NonEmptyArray<SynthesizeSpeechResponse>> => {
   // Let
   const ttsClient = new TextToSpeech.TextToSpeechClient()
   const ttsRequest: SynthesizeSpeechRequest =
@@ -187,20 +193,20 @@ const getTtsAudio = (s: string): TE.TaskEither<TTSError, [SynthesizeSpeechRespon
 }
 
 // Helper function that creates a TaskEither to write an audio chunck to disk
-const writeChunckAudioFile = (d: DirPath, i: number, a: [SynthesizeSpeechResponse]): TE.TaskEither<TTSError, FilePath> => {
+const writeChunkAudioFile = (d: DirPath, i: number, [a]: NonEmptyArray<SynthesizeSpeechResponse>): TE.TaskEither<TTSError, FilePath> => {
   // Let
   const filePath = path.join(d, `${i + 1000}.mp3`)
 
   // In
   return pipe(
-    TE.tryCatch( () => promisify(writeFile)(filePath, a[0].audioContent, 'binary'), (): TTSError => 'WriteAudioChuck' ),
+    TE.tryCatch( () => promisify(writeFile)(filePath, a.audioContent, 'binary'), (): TTSError => 'WriteAudioChuck' ),
     TE.map     ( () => filePath)
   )
 }
 
 // Helper function that creates a TaskEither that concatinates audio chunks and writes the file to disk.
-const concatAudioFiles = (fps: FilePath[], d: DirPath): TE.TaskEither<TTSError, FilePath> => {
-  if (fps.length == 1) { return TE.taskEither.of(fps[0]) }
+const concatAudioFiles = (fps: NonEmptyArray<FilePath>, d: DirPath): TE.TaskEither<TTSError, FilePath> => {
+  if (fps.length == 1) { return TE.taskEither.of(head(fps)) }
   else {
     // Let
     const ffmpegCmd = ffmpeg()
