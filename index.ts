@@ -7,15 +7,17 @@ import { promisify } from 'util'
 
 // Google APIs used throught
 import { PubSub, Topic } from '@google-cloud/pubsub'
-import { Storage, UploadOptions, UploadResponse } from '@google-cloud/storage'
+import { Storage, UploadOptions, UploadResponse} from '@google-cloud/storage'
+import { Metadata } from '@google-cloud/common'
 
 // Functional programming tools
 import { pipe } from 'fp-ts/lib/pipeable'
 import { flow } from 'fp-ts/lib/function'
 import { sequenceT } from 'fp-ts/lib/Apply'
+import * as A from 'fp-ts/lib/Array'
 import { error } from 'fp-ts/lib/Console'
 import * as E from 'fp-ts/lib/Either'
-import { NonEmptyArray, nonEmptyArray, head } from 'fp-ts/lib/NonEmptyArray'
+import * as NEA from 'fp-ts/lib/NonEmptyArray'
 import * as TE from 'fp-ts/lib/TaskEither'
 import { snd } from 'fp-ts/lib/Tuple'
 
@@ -24,21 +26,24 @@ import Mercury from '@postlight/mercury-parser'
 import * as config from './config.json'
 
 // Interfaces used throught
+// TODO: Look for actual type definition
 interface PubSubMessage {
   data: string;
 }
 
 // Type aliases used throught
-type DirPath  = string
-type FilePath = string
-type Hash     = string
-type Url      = string
+type DirPath    = string
+type FilePath   = string
+type Hash       = string
+type Url        = string
+type NEArray<A> = NEA.NonEmptyArray<A>
 
 // Small helper functions
 const base64Decode        = (s: string): string => Buffer.from(s, 'base64').toString()
 const stringToHash        = (s: string): Hash => createHash('md5').update(s).digest('hex')
-const traverseTE          = nonEmptyArray.traverse(TE.taskEither)
-const traverseWithIndexTE = nonEmptyArray.traverseWithIndex(TE.taskEither)
+const traverseArrayTE          = A.array.traverse(TE.taskEither)
+const traverseNEArrayTE          = NEA.nonEmptyArray.traverse(TE.taskEither)
+const traverseNEArrayWithIndexTE = NEA.nonEmptyArray.traverseWithIndex(TE.taskEither)
 
 // -------------------------------------------------------------------------------------------------
 // Web article/post content and metadata extraction
@@ -97,15 +102,17 @@ const processMercuryResult = (x: Mercury.ParseResult): Mercury.ParseResult => {
     , singleNewLineParagraphs: false
     }
   const date: Date = x.date_published ? new Date(x.date_published) : new Date()
-
-  // In
-  x.content =
+  const newContent: string =
     (x.title          ? `${x.title}\n\n`                           : '') +
     (x.author         ? `By: ${x.author}\n\n`                      : '') +
     (x.date_published ? `Published on: ${date.toDateString()}\n\n` : '') +
     (x.domain         ? `Published at: ${x.domain}\n\n`            : '') +
     htmlToText.fromString(x.content as string, htmlToTextOptions)
-  return x
+
+  // In
+  const out = Object.assign({}, x)
+  out.content = newContent
+  return out
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -135,11 +142,11 @@ type TTSError =
 // Cloud function triggered by PubSub message that receives consent and metadata and creates TTS audio file.
 export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
   // Let
-  const contentData: Mercury.ParseResult      = JSON.parse(base64Decode(m.data))
-  const chunkedContent: NonEmptyArray<string> = chunkText(contentData.content, 5000) //5000 chars is the TTS API limit
-  const workingDirName: string                = stringToHash(contentData.url)
-  const workingDirPath: DirPath               = path.join(tmpdir(), workingDirName)
-  const removeWorkingDir                      = (x: TTSError): TE.TaskEither<TTSError, void> =>
+  const contentData: Mercury.ParseResult = JSON.parse(base64Decode(m.data))
+  const chunkedContent: NEArray<string>  = chunkText(contentData.content, 5000) //5000 chars is the TTS API limit
+  const workingDirName: string           = stringToHash(contentData.url)
+  const workingDirPath: DirPath          = path.join(tmpdir(), workingDirName)
+  const removeWorkingDir                 = (x: TTSError): TE.TaskEither<TTSError, void> =>
     TE.tryCatch( ()  => promisify(rmrf)(workingDirPath), (): TTSError => x )
 
   // In
@@ -149,9 +156,9 @@ export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
         removeWorkingDir('RmWorkingDir'),
         TE.chain( ()  => TE.tryCatch(() => promisify(mkdir)(workingDirPath), (): TTSError => 'MkWoringDir') )
       ),
-      traverseTE(chunkedContent, getTtsAudio)
+      traverseNEArrayTE(chunkedContent, getTtsAudio)
     ),
-    TE.chain( t   => traverseWithIndexTE(snd(t), (i, x) => writeChunkAudioFile(workingDirPath, i, x)) ),
+    TE.chain( t   => traverseNEArrayWithIndexTE(snd(t), (i, x) => writeChunkAudioFile(workingDirPath, i, x)) ),
     TE.chain( fps => concatAudioFiles(fps, workingDirPath) ),
     TE.chain( fp  => createGcsObject(fp, contentData) )
   )()
@@ -179,7 +186,7 @@ export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
 }
 
 // Helper function that creates creates a TaskEither to convert a string to audio.
-const getTtsAudio = (s: string): TE.TaskEither<TTSError, NonEmptyArray<SynthesizeSpeechResponse>> => {
+const getTtsAudio = (s: string): TE.TaskEither<TTSError, NEArray<SynthesizeSpeechResponse>> => {
   // Let
   const ttsClient = new TextToSpeech.TextToSpeechClient()
   const ttsRequest: SynthesizeSpeechRequest =
@@ -193,32 +200,34 @@ const getTtsAudio = (s: string): TE.TaskEither<TTSError, NonEmptyArray<Synthesiz
 }
 
 // Helper function that creates a TaskEither to write an audio chunck to disk
-const writeChunkAudioFile = (d: DirPath, i: number, [a]: NonEmptyArray<SynthesizeSpeechResponse>): TE.TaskEither<TTSError, FilePath> => {
+const writeChunkAudioFile = (d: DirPath, i: number, [a]: NEArray<SynthesizeSpeechResponse>): TE.TaskEither<TTSError, FilePath> => {
   // Let
-  const filePath = path.join(d, `${i + 1000}.mp3`)
+  const fp: FilePath = path.join(d, `${i + 1000}.mp3`)
 
   // In
   return pipe(
-    TE.tryCatch( () => promisify(writeFile)(filePath, a.audioContent, 'binary'), (): TTSError => 'WriteAudioChuck' ),
-    TE.map     ( () => filePath)
+    TE.tryCatch( () => promisify(writeFile)(fp, a.audioContent, 'binary'), (): TTSError => 'WriteAudioChuck' ),
+    TE.map     ( () => fp)
   )
 }
 
 // Helper function that creates a TaskEither that concatinates audio chunks and writes the file to disk.
-const concatAudioFiles = (fps: NonEmptyArray<FilePath>, d: DirPath): TE.TaskEither<TTSError, FilePath> => {
-  if (fps.length == 1) { return TE.taskEither.of(head(fps)) }
+const concatAudioFiles = (fps: NEArray<FilePath>, d: DirPath): TE.TaskEither<TTSError, FilePath> => {
+  if (fps.length == 1) {
+    return TE.taskEither.of(NEA.head(fps))
+  }
   else {
     // Let
     const ffmpegCmd = ffmpeg()
-    const singleFilePath = path.join(d, 'audio.mp3')
+    const fp: FilePath = path.join(d, 'audio.mp3')
     fps.forEach(x => ffmpegCmd.input(x))
     const ffmpegPromise = new Promise<string>((resolve, reject) => {
       ffmpegCmd
         .setFfmpegPath(ffmpegStatic.path)
         .setFfprobePath(ffprobeStatic.path)
         .on('error', err => reject(Error(err)))
-        .on('end'  , ()  => resolve(singleFilePath))
-        .mergeToFile(singleFilePath)
+        .on('end'  , ()  => resolve(fp))
+        .mergeToFile(fp)
     })
 
     // In
@@ -254,63 +263,85 @@ const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TE.TaskEither<TT
 // -------------------------------------------------------------------------------------------------
 // Podcast feed generation
 // -------------------------------------------------------------------------------------------------
-// TODO: Implement this in new style
 
+// Specific imports for this cloud function
+import Podcast from 'podcast'
 
-//// Cloud function to generate RSS feed for podcast
-//// triggered by an update to bucket
-//exports.generatePodcastRss = async (data) => {
-//  // Lazyly load required dependencies
-//  Podcast = require('podcast');
+// Specific types for this cloud function
+interface StorageEvent {
+  name: string;
+}
 
-//  // Check if file changed is podcast rss file
-//  const rssFileName = 'podcast.xml';
-//  if (data.name == rssFileName) {
-//    console.log('False alarm, it was just the RSS feed being updated.');
-//    return;
-//  }
+// Error type for this cloud function
+type PodcastError =
+  'GetBucketObjects'
+  | 'GetObjectMeta'
+  | 'RSSFileWrite'
 
-//  // Generate podcast feed object
-//  const feed = new Podcast({
-//    title: config().podTitle,
-//    description: config().podDescription,
-//    feed_url: 'http://storage.googleapis.com/' + config().gcpBucketName + '/' + rssFileName,
-//    site_url: config().podSiteUrl,
-//    author: config().podAuthor,
-//    language: config().podLanguage,
-//    itunesType: config().podType
-//  });
+// Cloud function triggered by bucket update that generate the podcast RSS.
+export const generatePodcastRss = async (event: StorageEvent ): Promise<void> => {
+  // Let
+  const bucket         = (new Storage()).bucket(config.gcpBucketName)
+  const rssFileName    = 'podcast.xml'
+  const rssFileOptions = { public: true, contentType: 'application/rss+xml' }
+  const feedOptions: Podcast.FeedOptions =
+    { title      : config.podTitle
+    , description: config.podDescription
+    , feedUrl    : 'http://storage.googleapis.com/' + config.gcpBucketName + '/' + rssFileName
+    , siteUrl    : config.podSiteUrl
+    , author     : config.podAuthor
+    , language   : config.podLanguage
+    //, itunesType : config.podType
+    }
 
-//  const storage = new Storage();
-//  const bucket = storage.bucket(config().gcpBucketName);
+  console.log
 
-//  // Get all files from bucket
-//  return await bucket.getFiles()
-//    // Get metadata for all files
-//    .map(results => { return results[0].getMetadata(); })
-//    // Filter for MP3 files only
-//    .then(results => { return Promise.filter(results[0], {contentType: 'audio/mpeg'}); })
-//    // Create RSS item object for each MP3 file
-//    .map(metadata => {
-//      return {
-//        title: metadata.metadata.title,
-//        description: 'Excerpt: ' + metadata.metadata.excerpt,
-//        url: metadata.metadata.url,
-//        author: metadata.metadata.author,
-//        enclosure: {
-//          url: 'http://storage.googleapis.com/' + metadata.bucket + '/' + metadata.name,
-//          size: metadata.size
-//        },
-//        date: metadata.timeCreated,
-//        itunesImage: metadata.metadata.leadImageUrl
-//      };
-//    })
-//    // Add each RSS item object to RSS feed
-//    .each(rssItem => { feed.addItem(rssItem); })
-//    // Write RSS feed to bucket
-//    .then(() => {
-//      bucket.file(rssFileName).save(feed.buildXml('  '), { public: true, contentType: 'application/rss+xml' });
-//      console.log('Podcast RSS regenerated.');
-//    })
-//    .catch( err => { console.error(err); });
-//};
+  // In
+  if (event.name == rssFileName) {
+    console.log('False alarm, it was just the RSS feed being updated.')
+    return
+  }
+
+  await pipe(
+    TE.tryCatch( () => bucket.getFiles(), (): PodcastError => 'GetBucketObjects' ),
+    TE.chain   ( r  => traverseArrayTE(r[0], f => TE.tryCatch( () => f.getMetadata(), (): PodcastError => 'GetObjectMeta'))),
+    TE.map     ( ms => A.array.filter(ms, ([x]: Metadata) => x.contentType == 'audio/mpeg') ),
+    TE.map( x => {console.log(x); return x}),
+    TE.map     ( ms => ms.map(createRssItem) ),
+    TE.map     ( is => (new Podcast(feedOptions, is)).buildXml(true) ),
+    TE.chain   ( p  => TE.tryCatch( () => bucket.file(rssFileName).save(p, rssFileOptions), (): PodcastError => 'RSSFileWrite') )
+  )()
+    .then(x =>
+      pipe(
+        x,
+        E.fold(
+          e => {
+            switch(e) {
+            case 'GetBucketObjects': error('Error retriving objects from bucket.')(); break
+            case 'GetObjectMeta'   : error('Error retriving object metadata.')(); break
+            case 'RSSFileWrite'    : error('Error writing RSS feed file to bucket.')(); break
+            default                : error('Somehow and error occured that wasn\'t accounted for.')
+            }
+          },
+          () => {}
+        )
+      )
+    )
+}
+
+// Helper function
+const createRssItem = ([m]: Metadata): Podcast.Item => {
+  return (
+    { title      : m.metadata.title
+    , description: `Excerpt: ${m.metadata.excerpt}`
+    , url        : m.metadata.url
+    , author     : m.metadata.author
+    , enclosure  :
+      { url : `http://storage.googleapis.com/${m.bucket}/${m.name}`
+      , size: m.size
+      }
+    , date       : m.timeCreated
+    , itunesImage: m.metadata.leadImageUrl
+    }
+  )
+}

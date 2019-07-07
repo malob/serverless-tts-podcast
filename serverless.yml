@@ -35,12 +35,12 @@ functions:
       - event:
           eventType: providers/cloud.pubsub/eventTypes/topic.publish
           resource: projects/${self:provider.project}/topics/${self:custom.gcpPubSubTtsTopicName}
-  # generate-podcast-rss:
-  #   handler: generatePodcastRss
-  #   events:
-  #     - event:
-  #         eventType: providers/cloud.storage/eventTypes/object.change
-  #         resource: projects/${self:provider.project}/buckets/${self:custom.gcpBucketName}
+  generate-podcast-rss:
+    handler: generatePodcastRss
+    events:
+      - event:
+          eventType: providers/cloud.storage/eventTypes/object.change
+          resource: projects/${self:provider.project}/buckets/${self:custom.gcpBucketName}
 
 resources:
   resources:
