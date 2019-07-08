@@ -16,7 +16,8 @@ import { snd } from 'fp-ts/lib/Tuple'
 
 // Other imports used throught
 import Mercury from '@postlight/mercury-parser'
-const conf: Config = require('./config.json') //eslint-disable-line
+import * as config from './config.json'
+const conf = config as Config
 
 // Type aliases used throught
 type DirPath  = string
@@ -81,7 +82,7 @@ type ParseError =
 export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
   // Let
   const url: Url        = base64Decode(m.data)
-  const pubsub: Topic   = (new PubSub()).topic(conf.gcp.parserPubSubTopic)
+  const pubsub: Topic   = (new PubSub()).topic(conf.gcp.ttsPubSubTopic)
   const contentToBuffer = (x: Mercury.ParseResult): Buffer => Buffer.from(JSON.stringify(x))
 
   // In
@@ -95,7 +96,7 @@ export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
       e => {
         switch(e) {
         case 'MercuryParser': error('Error while trying to parse webpage.')(); break
-        case 'EmptyBody'    : error('Error, no body consent returned by parser.')(); break
+        case 'EmptyBody'    : error('Error, no body content returned by parser.')(); break
         case 'PubSub'       : error('Error, failed to send message to TTS function.')(); break
         default             : error('Somehow and error occured that wasn\'t accounted for.')()
         }
@@ -122,9 +123,9 @@ const processMercuryResult = (x: Mercury.ParseResult): Mercury.ParseResult => {
     (x.date_published ? `Published on: ${date.toDateString()}\n\n` : '') +
     (x.domain         ? `Published at: ${x.domain}\n\n`            : '') +
     htmlToText.fromString(x.content as string, htmlToTextOptions)
+  const out = Object.assign({}, x)
 
   // In
-  const out = Object.assign({}, x)
   out.content = newContent
   return out
 }
