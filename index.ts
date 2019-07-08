@@ -1,47 +1,65 @@
-// Node imports
-import { createHash } from 'crypto'
-import { mkdir, writeFile } from 'fs'
-import { tmpdir } from 'os'
-import path from 'path'
-import { promisify } from 'util'
-
 // Google APIs used throught
-import { PubSub, Topic } from '@google-cloud/pubsub'
-import { Storage, UploadOptions, UploadResponse} from '@google-cloud/storage'
-import { Metadata } from '@google-cloud/common'
+import { Storage } from '@google-cloud/storage'
+import { VoiceSelectionParams } from '@google-cloud/text-to-speech'
 
 // Functional programming tools
 import { pipe } from 'fp-ts/lib/pipeable'
 import { flow } from 'fp-ts/lib/function'
 import { sequenceT } from 'fp-ts/lib/Apply'
 import * as A from 'fp-ts/lib/Array'
-import { error } from 'fp-ts/lib/Console'
+import { log, error } from 'fp-ts/lib/Console'
 import * as E from 'fp-ts/lib/Either'
 import * as NEA from 'fp-ts/lib/NonEmptyArray'
+import { NonEmptyArray as NEArray } from 'fp-ts/lib/NonEmptyArray'
 import * as TE from 'fp-ts/lib/TaskEither'
 import { snd } from 'fp-ts/lib/Tuple'
 
 // Other imports used throught
 import Mercury from '@postlight/mercury-parser'
-import * as config from './config.json'
-
-// Interfaces used throught
-// TODO: Look for actual type definition
-interface PubSubMessage {
-  data: string;
-}
+const conf: Config = require('./config.json') //eslint-disable-line
 
 // Type aliases used throught
-type DirPath    = string
-type FilePath   = string
-type Hash       = string
-type Url        = string
-type NEArray<A> = NEA.NonEmptyArray<A>
+type DirPath  = string
+type FilePath = string
+type Hash     = string
+type Url      = string
+
+// Interfaces used throught
+interface Config {
+  readonly gcp: GcpConfig;
+  readonly podcast: PodcastConfig;
+}
+
+interface GcpConfig {
+  readonly credentialsPath: FilePath;
+  readonly project: string;
+  readonly bucket: string;
+  readonly parserPubSubTopic: string;
+  readonly ttsPubSubTopic: string;
+  readonly ttsCharLimit: number;
+  readonly ttsOptions: GcpTtsConfig;
+}
+
+interface GcpTtsConfig {
+  readonly voice: VoiceSelectionParams;
+}
+
+interface PodcastConfig {
+  readonly title: string;
+  readonly description: string;
+  readonly siteUrl: Url;
+  readonly author: string;
+  readonly language: string;
+}
+
+// TODO: Look for actual type definition
+interface PubSubMessage {
+  readonly data: string;
+}
 
 // Small helper functions
-const base64Decode        = (s: string): string => Buffer.from(s, 'base64').toString()
-const stringToHash        = (s: string): Hash => createHash('md5').update(s).digest('hex')
-const traverseArrayTE          = A.array.traverse(TE.taskEither)
+const base64Decode               = (s: string): string => Buffer.from(s, 'base64').toString()
+const traverseArrayTE            = A.array.traverse(TE.taskEither)
 const traverseNEArrayTE          = NEA.nonEmptyArray.traverse(TE.taskEither)
 const traverseNEArrayWithIndexTE = NEA.nonEmptyArray.traverseWithIndex(TE.taskEither)
 
@@ -50,6 +68,7 @@ const traverseNEArrayWithIndexTE = NEA.nonEmptyArray.traverseWithIndex(TE.taskEi
 // -------------------------------------------------------------------------------------------------
 
 // Specific imports for this cloud function
+import { PubSub, Topic } from '@google-cloud/pubsub'
 import * as htmlToText from 'html-to-text'
 
 // Error type for this cloud funuction
@@ -62,32 +81,27 @@ type ParseError =
 export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
   // Let
   const url: Url        = base64Decode(m.data)
-  const pubsub: Topic   = (new PubSub()).topic(config.gcpPubSubTtsTopicName)
+  const pubsub: Topic   = (new PubSub()).topic(conf.gcp.parserPubSubTopic)
   const contentToBuffer = (x: Mercury.ParseResult): Buffer => Buffer.from(JSON.stringify(x))
 
   // In
   await pipe(
-    TE.tryCatch( () => Mercury.parse(url), (): ParseError => 'MercuryParser'),
+    TE.tryCatch( () => Mercury.parse(url), (): ParseError => 'MercuryParser' ),
     TE.chain   ( c  => c.content ? TE.right(c) : TE.left<ParseError>('EmptyBody') ),
     TE.map     ( flow(processMercuryResult, contentToBuffer) ),
     TE.chain   ( b  => TE.tryCatch(() => pubsub.publish(b), (): ParseError => 'PubSub') ),
   )()
-    .then(x =>
-      pipe(
-        x,
-        E.fold(
-          e => {
-            switch(e) {
-            case 'MercuryParser': error('Error while trying to parse webpage.')(); break
-            case 'EmptyBody'    : error('Error, no body consent returned by parser.')(); break
-            case 'PubSub'       : error('Error, failed to send message to TTS function.')(); break
-            default             : error('Somehow and error occured that wasn\'t accounted for.')
-            }
-          },
-          () => {}
-        )
-      )
-    )
+    .then(x => pipe( x, E.fold(
+      e => {
+        switch(e) {
+        case 'MercuryParser': error('Error while trying to parse webpage.')(); break
+        case 'EmptyBody'    : error('Error, no body consent returned by parser.')(); break
+        case 'PubSub'       : error('Error, failed to send message to TTS function.')(); break
+        default             : error('Somehow and error occured that wasn\'t accounted for.')()
+        }
+      },
+      () => {}
+    )))
 }
 
 // Helper function to prcoess consent into needed form
@@ -120,8 +134,15 @@ const processMercuryResult = (x: Mercury.ParseResult): Mercury.ParseResult => {
 // -------------------------------------------------------------------------------------------------
 
 // Specific imports for this cloud function
+import { createHash } from 'crypto'
+import { mkdir, writeFile } from 'fs'
+import { tmpdir } from 'os'
+import path from 'path'
+import { promisify } from 'util'
+
+import { UploadOptions, UploadResponse} from '@google-cloud/storage'
 import TextToSpeech from '@google-cloud/text-to-speech'
-import { SynthesizeSpeechRequest, SynthesizeSpeechResponse } from '@google-cloud/text-to-speech'
+import { SynthesizeSpeechRequest, SynthesizeSpeechResponse as TtsResponse } from '@google-cloud/text-to-speech'
 
 const chunkText = require('chunk-text') //eslint-disable-line
 import ffmpeg from 'fluent-ffmpeg'
@@ -130,96 +151,99 @@ import ffprobeStatic from 'ffprobe-static'
 import rmrf from 'rimraf'
 
 // Error type for this cloud function
-type TTSError =
+type TtsError =
   'RmWorkingDir'
   | 'MkWoringDir'
   | 'TTSConversion'
   | 'WriteAudioChuck'
-  | 'WriteAudioFile'
+  | 'ConcatAudioChunks'
   | 'BucketWrite'
-  | 'RmWorkingDirEnd'
+
+// Small helper functions for this cloud function
+const stringToHash = (s: string): Hash => createHash('md5').update(s).digest('hex')
 
 // Cloud function triggered by PubSub message that receives consent and metadata and creates TTS audio file.
 export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
   // Let
   const contentData: Mercury.ParseResult = JSON.parse(base64Decode(m.data))
-  const chunkedContent: NEArray<string>  = chunkText(contentData.content, 5000) //5000 chars is the TTS API limit
+  const chunkedContent: NEArray<string>  = chunkText(contentData.content, conf.gcp.ttsCharLimit)
   const workingDirName: string           = stringToHash(contentData.url)
   const workingDirPath: DirPath          = path.join(tmpdir(), workingDirName)
-  const removeWorkingDir                 = (x: TTSError): TE.TaskEither<TTSError, void> =>
-    TE.tryCatch( ()  => promisify(rmrf)(workingDirPath), (): TTSError => x )
+
+  const removeWorkingDir = (): TE.TaskEither<TtsError, void> =>
+    TE.tryCatch( () => promisify(rmrf)(workingDirPath), (): TtsError => 'RmWorkingDir' )
+  const createWorkingDir = (): TE.TaskEither<TtsError, void> =>
+    TE.tryCatch( () => promisify(mkdir)(workingDirPath), (): TtsError => 'MkWoringDir' )
+  const writeAudioChunks =
+    (xs: NEArray<TtsResponse>): TE.TaskEither<TtsError, NEArray<FilePath>> =>
+      traverseNEArrayWithIndexTE(xs, (i, x) => writeAudioChunk(workingDirPath, i, x))
 
   // In
   await pipe(
     sequenceT(TE.taskEither)(
-      pipe(
-        removeWorkingDir('RmWorkingDir'),
-        TE.chain( ()  => TE.tryCatch(() => promisify(mkdir)(workingDirPath), (): TTSError => 'MkWoringDir') )
-      ),
-      traverseNEArrayTE(chunkedContent, getTtsAudio)
+      pipe             ( removeWorkingDir(), TE.chain(() => createWorkingDir()) ),
+      traverseNEArrayTE( chunkedContent, getTtsAudio )
     ),
-    TE.chain( t   => traverseNEArrayWithIndexTE(snd(t), (i, x) => writeChunkAudioFile(workingDirPath, i, x)) ),
-    TE.chain( fps => concatAudioFiles(fps, workingDirPath) ),
+    TE.chain( t   => writeAudioChunks(snd(t)) ),
+    TE.chain( fps => concatAudioChunks(fps, workingDirPath) ),
     TE.chain( fp  => createGcsObject(fp, contentData) )
   )()
-    .then(x =>
-      pipe(
-        x,
-        E.fold(
-          e => {
-            switch(e) {
-            case 'RmWorkingDir'   : error('Error while trying to remove old working directory.')(); break
-            case 'MkWoringDir'    : error('Error creating working directory.')(); break
-            case 'TTSConversion'  : error('Error during TTS conversion step.')(); break
-            case 'WriteAudioChuck': error('Error writing an audio chunk to disk.')(); break
-            case 'WriteAudioFile' : error('Error concatinating audio chunk.')(); break
-            case 'BucketWrite'    : error('Error writing file to bucket.'); break
-            default               : error('Somehow and error occured that wasn\'t accounted for.')
-            }
-          },
-          () => {}
-        )
-      )
-    )
-    .then( () => removeWorkingDir('RmWorkingDirEnd')() )
+    .then(x => pipe( x, E.fold(
+      e => {
+        switch(e) {
+        case 'RmWorkingDir'     : error('Error while trying to remove old working directory.')(); break
+        case 'MkWoringDir'      : error('Error creating working directory.')(); break
+        case 'TTSConversion'    : error('Error during TTS conversion step.')(); break
+        case 'WriteAudioChuck'  : error('Error writing an audio chunk to disk.')(); break
+        case 'ConcatAudioChunks': error('Error concatinating audio chunk.')(); break
+        case 'BucketWrite'      : error('Error writing file to bucket.')(); break
+        default                 : error('Somehow and error occured that wasn\'t accounted for.')()
+        }
+      },
+      () => {}
+    )))
+    .then( () => removeWorkingDir()() )
     .then( x  => pipe( x, E.fold( () => error('Error cleaning up working directory')(), () => {} )) )
 }
 
 // Helper function that creates creates a TaskEither to convert a string to audio.
-const getTtsAudio = (s: string): TE.TaskEither<TTSError, NEArray<SynthesizeSpeechResponse>> => {
+const getTtsAudio = (s: string): TE.TaskEither<TtsError, TtsResponse> => {
   // Let
   const ttsClient = new TextToSpeech.TextToSpeechClient()
   const ttsRequest: SynthesizeSpeechRequest =
     { input      : { text: s }
-    , voice      : { languageCode: 'en-US', name: 'en-US-Wavenet-F', ssmlGender: 'FEMALE' }
+    , voice      : conf.gcp.ttsOptions.voice
     , audioConfig: { audioEncoding: 'MP3', effectsProfileId: ['headphone-class-device'] }
     }
 
   // In
-  return TE.tryCatch(() => ttsClient.synthesizeSpeech(ttsRequest), (): TTSError => 'TTSConversion')
+  return pipe(
+    TE.tryCatch( () => ttsClient.synthesizeSpeech(ttsRequest), (): TtsError => 'TTSConversion' ),
+    TE.map     ( ([x]) => x )
+  )
 }
 
 // Helper function that creates a TaskEither to write an audio chunck to disk
-const writeChunkAudioFile = (d: DirPath, i: number, [a]: NEArray<SynthesizeSpeechResponse>): TE.TaskEither<TTSError, FilePath> => {
+const writeAudioChunk = (d: DirPath, i: number, a: TtsResponse): TE.TaskEither<TtsError, FilePath> => {
   // Let
-  const fp: FilePath = path.join(d, `${i + 1000}.mp3`)
+  const fp: FilePath = path.join(d, `${i}.mp3`)
 
   // In
   return pipe(
-    TE.tryCatch( () => promisify(writeFile)(fp, a.audioContent, 'binary'), (): TTSError => 'WriteAudioChuck' ),
+    TE.tryCatch( () => promisify(writeFile)(fp, a.audioContent, 'binary'), (): TtsError => 'WriteAudioChuck' ),
     TE.map     ( () => fp)
   )
 }
 
 // Helper function that creates a TaskEither that concatinates audio chunks and writes the file to disk.
-const concatAudioFiles = (fps: NEArray<FilePath>, d: DirPath): TE.TaskEither<TTSError, FilePath> => {
+const concatAudioChunks = (fps: NEArray<FilePath>, d: DirPath): TE.TaskEither<TtsError, FilePath> => {
   if (fps.length == 1) {
     return TE.taskEither.of(NEA.head(fps))
   }
   else {
     // Let
-    const ffmpegCmd = ffmpeg()
     const fp: FilePath = path.join(d, 'audio.mp3')
+    const ffmpegCmd = ffmpeg()
     fps.forEach(x => ffmpegCmd.input(x))
     const ffmpegPromise = new Promise<string>((resolve, reject) => {
       ffmpegCmd
@@ -231,14 +255,14 @@ const concatAudioFiles = (fps: NEArray<FilePath>, d: DirPath): TE.TaskEither<TTS
     })
 
     // In
-    return TE.tryCatch( () => ffmpegPromise, (): TTSError => 'WriteAudioFile' )
+    return TE.tryCatch( () => ffmpegPromise, (): TtsError => 'ConcatAudioChunks' )
   }
 }
 
 // Helper function that creates a TaskEither that writes the audio file to GCS
-const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TE.TaskEither<TTSError, UploadResponse> => {
+const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TE.TaskEither<TtsError, UploadResponse> => {
   // Let
-  const bucket = (new Storage()).bucket(config.gcpBucketName)
+  const bucket = (new Storage()).bucket(conf.gcp.bucket)
   const hash = stringToHash(c.url)
   const objectOptions: UploadOptions =
     { destination: hash + '.mp3'
@@ -257,7 +281,7 @@ const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TE.TaskEither<TT
     }
 
   // In
-  return TE.tryCatch( () => bucket.upload(fp, objectOptions), (): TTSError => 'BucketWrite' )
+  return TE.tryCatch( () => bucket.upload(fp, objectOptions), (): TtsError => 'BucketWrite' )
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -265,9 +289,12 @@ const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TE.TaskEither<TT
 // -------------------------------------------------------------------------------------------------
 
 // Specific imports for this cloud function
+import { Metadata } from '@google-cloud/common'
+import { GetFileMetadataResponse, GetFilesResponse } from '@google-cloud/storage'
 import Podcast from 'podcast'
 
 // Specific types for this cloud function
+// TODO: Find actual type for this
 interface StorageEvent {
   name: string;
 }
@@ -281,55 +308,49 @@ type PodcastError =
 // Cloud function triggered by bucket update that generate the podcast RSS.
 export const generatePodcastRss = async (event: StorageEvent ): Promise<void> => {
   // Let
-  const bucket         = (new Storage()).bucket(config.gcpBucketName)
+  const bucket         = (new Storage()).bucket(conf.gcp.bucket)
   const rssFileName    = 'podcast.xml'
   const rssFileOptions = { public: true, contentType: 'application/rss+xml' }
   const feedOptions: Podcast.FeedOptions =
-    { title      : config.podTitle
-    , description: config.podDescription
-    , feedUrl    : 'http://storage.googleapis.com/' + config.gcpBucketName + '/' + rssFileName
-    , siteUrl    : config.podSiteUrl
-    , author     : config.podAuthor
-    , language   : config.podLanguage
-    //, itunesType : config.podType
+    { ...conf.podcast
+    , feedUrl: 'http://storage.googleapis.com/' + conf.gcp.bucket + '/' + rssFileName
     }
 
-  console.log
+  const getFilesFromBucket = (): TE.TaskEither<PodcastError, GetFilesResponse> =>
+    TE.tryCatch( () => bucket.getFiles(), (): PodcastError => 'GetBucketObjects' )
+  const getFilesMetadata = ([r]: GetFilesResponse): TE.TaskEither<PodcastError, GetFileMetadataResponse[]> =>
+    traverseArrayTE(r, f => TE.tryCatch( () => f.getMetadata(), (): PodcastError => 'GetObjectMeta'))
+  const writeFeedToBucket = (f: string): TE.TaskEither<PodcastError, void> =>
+    TE.tryCatch( () => bucket.file(rssFileName).save(f, rssFileOptions), (): PodcastError => 'RSSFileWrite')
 
   // In
   if (event.name == rssFileName) {
-    console.log('False alarm, it was just the RSS feed being updated.')
+    log('False alarm, it was just the RSS feed being updated.')()
     return
   }
 
   await pipe(
-    TE.tryCatch( () => bucket.getFiles(), (): PodcastError => 'GetBucketObjects' ),
-    TE.chain   ( r  => traverseArrayTE(r[0], f => TE.tryCatch( () => f.getMetadata(), (): PodcastError => 'GetObjectMeta'))),
-    TE.map     ( ms => A.array.filter(ms, ([x]: Metadata) => x.contentType == 'audio/mpeg') ),
-    TE.map( x => {console.log(x); return x}),
+    getFilesFromBucket(),
+    TE.chain   ( getFilesMetadata ),
+    TE.map     ( ms => A.array.filter(ms, ([x]) => x.contentType == 'audio/mpeg') ),
     TE.map     ( ms => ms.map(createRssItem) ),
     TE.map     ( is => (new Podcast(feedOptions, is)).buildXml(true) ),
-    TE.chain   ( p  => TE.tryCatch( () => bucket.file(rssFileName).save(p, rssFileOptions), (): PodcastError => 'RSSFileWrite') )
+    TE.chain   ( writeFeedToBucket )
   )()
-    .then(x =>
-      pipe(
-        x,
-        E.fold(
-          e => {
-            switch(e) {
-            case 'GetBucketObjects': error('Error retriving objects from bucket.')(); break
-            case 'GetObjectMeta'   : error('Error retriving object metadata.')(); break
-            case 'RSSFileWrite'    : error('Error writing RSS feed file to bucket.')(); break
-            default                : error('Somehow and error occured that wasn\'t accounted for.')
-            }
-          },
-          () => {}
-        )
-      )
-    )
+    .then(x => pipe( x, E.fold(
+      e => {
+        switch(e) {
+        case 'GetBucketObjects': error('Error retriving objects from bucket.')(); break
+        case 'GetObjectMeta'   : error('Error retriving object metadata.')(); break
+        case 'RSSFileWrite'    : error('Error writing RSS feed file to bucket.')(); break
+        default                : error('Somehow and error occured that wasn\'t accounted for.')
+        }
+      },
+      () => {}
+    )))
 }
 
-// Helper function
+// Helper function to create each item of RSS feed
 const createRssItem = ([m]: Metadata): Podcast.Item => {
   return (
     { title      : m.metadata.title

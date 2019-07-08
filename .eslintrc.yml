@@ -20,12 +20,12 @@ rules:
   key-spacing:
     - error
     - align: colon
-  no-console: off
-  semi: off
+  no-console: 0
+  semi: 0
   '@typescript-eslint/semi':
     - error
     - never
-  indent: off
+  indent: 0
   '@typescript-eslint/indent':
     - error
     - 2
