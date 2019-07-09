@@ -86,6 +86,7 @@ export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
   const contentToBuffer = (x: Mercury.ParseResult): Buffer => Buffer.from(JSON.stringify(x))
 
   // In
+  log(`Parsing content of: ${url}`)()
   await pipe(
     TE.tryCatch( () => Mercury.parse(url), (): ParseError => 'MercuryParser' ),
     TE.chain   ( c  => c.content ? TE.right(c) : TE.left<ParseError>('EmptyBody') ),
@@ -315,6 +316,7 @@ export const generatePodcastRss = async (event: StorageEvent ): Promise<void> =>
   const feedOptions: Podcast.FeedOptions =
     { ...conf.podcast
     , feedUrl: 'http://storage.googleapis.com/' + conf.gcp.bucket + '/' + rssFileName
+    , ttl    : 1
     }
 
   const getFilesFromBucket = (): TE.TaskEither<PodcastError, GetFilesResponse> =>
