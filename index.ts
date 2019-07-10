@@ -70,7 +70,7 @@ import { PubSub, Topic } from '@google-cloud/pubsub'
 import * as htmlToText from 'html-to-text'
 
 // Error type for this cloud funuction
-type ParseError =
+type ParserErrorType =
   'MercuryParser'
   | 'EmptyBody'
   | 'PubSub'
@@ -85,10 +85,10 @@ export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
   // In
   log(`Parsing content of: ${url}`)()
   await pipe(
-    TE.tryCatch( () => Mercury.parse(url), () => 'MercuryParser' as ParseError ),
-    TE.chain   ( c  => c.content ? TE.right(c) : TE.left<ParseError>('EmptyBody') ),
+    TE.tryCatch( () => Mercury.parse(url), () => 'MercuryParser' as ParserErrorType ),
+    TE.chain   ( c  => c.content ? TE.right(c) : TE.left<ParserErrorType>('EmptyBody') ),
     TE.map     ( flow(processMercuryResult, contentToBuffer) ),
-    TE.chain   ( b  => TE.tryCatch(() => pubsub.publish(b), () => 'PubSub' as ParseError) ),
+    TE.chain   ( b  => TE.tryCatch(() => pubsub.publish(b), () => 'PubSub' as ParserErrorType) ),
   )()
     .then(x => pipe( x, E.fold(
       e => {
@@ -150,7 +150,7 @@ import ffprobeStatic from 'ffprobe-static'
 import rmrf from 'rimraf'
 
 // Error type for this cloud function
-type TtsError =
+type TtsErrorType =
   'RmWorkingDir'
   | 'MkWoringDir'
   | 'TTSConversion'
@@ -169,18 +169,18 @@ export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
   const workingDirName: string           = stringToHash(contentData.url)
   const workingDirPath: DirPath          = path.join(tmpdir(), workingDirName)
 
-  const removeWorkingDir = (): TE.TaskEither<TtsError, void> =>
-    TE.tryCatch( () => promisify(rmrf)(workingDirPath), () => 'RmWorkingDir' as TtsError)
-  const createWorkingDir = (): TE.TaskEither<TtsError, void> =>
-    TE.tryCatch( () => promisify(mkdir)(workingDirPath), () => 'MkWoringDir' as TtsError )
+  const removeWorkingDir = (): TE.TaskEither<TtsErrorType, void> =>
+    TE.tryCatch( () => promisify(rmrf)(workingDirPath), () => 'RmWorkingDir' as TtsErrorType)
+  const createWorkingDir = (): TE.TaskEither<TtsErrorType, void> =>
+    TE.tryCatch( () => promisify(mkdir)(workingDirPath), () => 'MkWoringDir' as TtsErrorType )
   const writeAudioChunks =
-    (xs: TtsResponse[]): TE.TaskEither<TtsError, FilePath[]> =>
+    (xs: TtsResponse[]): TE.TaskEither<TtsErrorType, FilePath[]> =>
       traverseArrayWithIndexTE(xs, (i, x) => writeAudioChunk(workingDirPath, i, x))
 
   // In
   await pipe(
     sequenceT(TE.taskEither)(
-      pipe             ( removeWorkingDir(), TE.chain(() => createWorkingDir()) ),
+      pipe           ( removeWorkingDir(), TE.chain(() => createWorkingDir()) ),
       traverseArrayTE( chunkedContent, getTtsAudio )
     ),
     TE.chain( t   => writeAudioChunks(snd(t)) ),
@@ -206,7 +206,7 @@ export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
 }
 
 // Helper function that creates creates a TaskEither to convert a string to audio.
-const getTtsAudio = (s: string): TE.TaskEither<TtsError, TtsResponse> => {
+const getTtsAudio = (s: string): TE.TaskEither<TtsErrorType, TtsResponse> => {
   // Let
   const ttsClient = new TextToSpeech.TextToSpeechClient()
   const ttsRequest: SynthesizeSpeechRequest =
@@ -217,25 +217,25 @@ const getTtsAudio = (s: string): TE.TaskEither<TtsError, TtsResponse> => {
 
   // In
   return pipe(
-    TE.tryCatch( () => ttsClient.synthesizeSpeech(ttsRequest), () => 'TTSConversion' as TtsError ),
+    TE.tryCatch( () => ttsClient.synthesizeSpeech(ttsRequest), () => 'TTSConversion' as TtsErrorType ),
     TE.map     ( ([x]) => x )
   )
 }
 
 // Helper function that creates a TaskEither to write an audio chunck to disk
-const writeAudioChunk = (d: DirPath, i: number, a: TtsResponse): TE.TaskEither<TtsError, FilePath> => {
+const writeAudioChunk = (d: DirPath, i: number, a: TtsResponse): TE.TaskEither<TtsErrorType, FilePath> => {
   // Let
   const fp: FilePath = path.join(d, `${i}.mp3`)
 
   // In
   return pipe(
-    TE.tryCatch( () => promisify(writeFile)(fp, a.audioContent, 'binary'), () => 'WriteAudioChuck' as TtsError ),
+    TE.tryCatch( () => promisify(writeFile)(fp, a.audioContent, 'binary'), () => 'WriteAudioChuck' as TtsErrorType ),
     TE.map     ( () => fp)
   )
 }
 
 // Helper function that creates a TaskEither that concatinates audio chunks and writes the file to disk.
-const concatAudioChunks = (fps: FilePath[], d: DirPath): TE.TaskEither<TtsError, FilePath> => {
+const concatAudioChunks = (fps: FilePath[], d: DirPath): TE.TaskEither<TtsErrorType, FilePath> => {
   if (fps.length == 1) {
     return TE.taskEither.of(fps[0])
   }
@@ -254,12 +254,12 @@ const concatAudioChunks = (fps: FilePath[], d: DirPath): TE.TaskEither<TtsError,
     })
 
     // In
-    return TE.tryCatch( () => ffmpegPromise, () => 'ConcatAudioChunks' as TtsError )
+    return TE.tryCatch( () => ffmpegPromise, () => 'ConcatAudioChunks' as TtsErrorType )
   }
 }
 
 // Helper function that creates a TaskEither that writes the audio file to GCS
-const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TE.TaskEither<TtsError, UploadResponse> => {
+const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TE.TaskEither<TtsErrorType, UploadResponse> => {
   // Let
   const bucket = (new Storage()).bucket(conf.gcp.bucket)
   const hash = stringToHash(c.url)
@@ -280,7 +280,7 @@ const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TE.TaskEither<Tt
     }
 
   // In
-  return TE.tryCatch( () => bucket.upload(fp, objectOptions), () => 'BucketWrite' as TtsError )
+  return TE.tryCatch( () => bucket.upload(fp, objectOptions), () => 'BucketWrite' as TtsErrorType )
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -299,7 +299,7 @@ interface StorageEvent {
 }
 
 // Error type for this cloud function
-type RssGenError =
+type RssGenErrorType =
   'GetBucketObjects'
   | 'GetObjectMeta'
   | 'RSSFileWrite'
@@ -316,12 +316,12 @@ export const generatePodcastRss = async (event: StorageEvent ): Promise<void> =>
     , ttl    : 1
     }
 
-  const getFilesFromBucket = (): TE.TaskEither<RssGenError, GetFilesResponse> =>
-    TE.tryCatch( () => bucket.getFiles(), () => 'GetBucketObjects' as RssGenError )
-  const getFilesMetadata = ([r]: GetFilesResponse): TE.TaskEither<RssGenError, GetFileMetadataResponse[]> =>
-    traverseArrayTE(r, f => TE.tryCatch( () => f.getMetadata(), (): RssGenError => 'GetObjectMeta'))
-  const writeFeedToBucket = (f: string): TE.TaskEither<RssGenError, void> =>
-    TE.tryCatch( () => bucket.file(rssFileName).save(f, rssFileOptions), (): RssGenError => 'RSSFileWrite')
+  const getFilesFromBucket = (): TE.TaskEither<RssGenErrorType, GetFilesResponse> =>
+    TE.tryCatch( () => bucket.getFiles(), () => 'GetBucketObjects' as RssGenErrorType )
+  const getFilesMetadata = ([r]: GetFilesResponse): TE.TaskEither<RssGenErrorType, GetFileMetadataResponse[]> =>
+    traverseArrayTE(r, f => TE.tryCatch( () => f.getMetadata(), () => 'GetObjectMeta' as RssGenErrorType))
+  const writeFeedToBucket = (f: string): TE.TaskEither<RssGenErrorType, void> =>
+    TE.tryCatch( () => bucket.file(rssFileName).save(f, rssFileOptions), () => 'RSSFileWrite' as RssGenErrorType)
 
   // In
   if (event.name == rssFileName) {
