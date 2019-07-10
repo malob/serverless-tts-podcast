@@ -9,6 +9,7 @@
   },
   "author": "Malo Bourgon",
   "devDependencies": {
+    "@types/chunk-text": "^1.0.0",
     "@types/ffmpeg-static": "^2.0.0",
     "@types/ffprobe-static": "^2.0.0",
     "@types/fluent-ffmpeg": "^2.1.10",
@@ -22,6 +23,7 @@
     "@typescript-eslint/eslint-plugin": "^1.11.0",
     "@typescript-eslint/parser": "^1.11.0",
     "eslint": "^5.16.0",
+    "serverless": "^1.46.1",
     "serverless-google-cloudfunctions": "^2.3.2",
     "serverless-plugin-typescript": "^1.1.7",
     "typescript": "^3.5.2"
