@@ -22,7 +22,7 @@ type ParserErrorType =
   | 'EmptyBody'
   | 'PubSub'
 
-// Cloud function triggered by a PubSubMessage that recieves a url and returns content and metadata.
+// Cloud function triggered by a PubSubMessage that receives a url and returns content and metadata.
 export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
   // Let
   const url: Url        = base64Decode(m.data)
@@ -50,7 +50,7 @@ export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
     )))
 }
 
-// Helper function to prcoess content into needed form
+// Helper function to process content into needed form
 const processMercuryResult = (x: Mercury.ParseResult): Mercury.ParseResult => {
   // Let
   const htmlToTextOptions: HtmlToTextOptions =
@@ -68,9 +68,7 @@ const processMercuryResult = (x: Mercury.ParseResult): Mercury.ParseResult => {
     (x.date_published ? `Published on: ${date.toDateString()}\n\n` : '') +
     (x.domain         ? `Published at: ${x.domain}\n\n`            : '') +
     htmlToText.fromString(x.content as string, htmlToTextOptions)
-  const out = Object.assign({}, x)
 
   // In
-  out.content = newContent
-  return out
+  return {...x, content: newContent}
 }

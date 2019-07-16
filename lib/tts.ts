@@ -99,7 +99,7 @@ const getTtsAudio = (s: string): TaskEither<TtsErrorType, TtsResponse> => {
   )
 }
 
-// Helper function that creates a TaskEither to write an audio chunck to disk
+// Helper function that creates a TaskEither to write an audio chunk to disk
 const writeAudioChunk = (d: DirPath, i: number, a: TtsResponse): TaskEither<TtsErrorType, FilePath> => {
   // Let
   const fp: FilePath = path.join(d, `${i}.mp3`)
@@ -111,7 +111,7 @@ const writeAudioChunk = (d: DirPath, i: number, a: TtsResponse): TaskEither<TtsE
   )
 }
 
-// Helper function that creates a TaskEither that concatinates audio chunks and writes the file to disk.
+// Helper function that creates a TaskEither that concatenates audio chunks and writes the file to disk.
 const concatAudioChunks = (fps: FilePath[], d: DirPath): TaskEither<TtsErrorType, FilePath> => {
   if (fps.length == 1) {
     return taskEither.of(fps[0])

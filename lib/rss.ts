@@ -30,7 +30,7 @@ export const generatePodcastRss = async (event: StorageEvent): Promise<void> => 
   const rssFileOptions = { public: true, contentType: 'application/rss+xml' }
   const feedOptions: Podcast.FeedOptions =
     { ...conf.podcast
-    , feedUrl: 'http://storage.googleapis.com/' + conf.gcp.bucket + '/' + rssFileName
+    , feedUrl: `http://storage.googleapis.com/${conf.gcp.bucket}/${rssFileName}`
     , ttl    : 1
     }
 
@@ -43,7 +43,7 @@ export const generatePodcastRss = async (event: StorageEvent): Promise<void> => 
 
   // In
   if (event.name == rssFileName) {
-    log('False alarm, it was just the RSS feed being updated.')()
+    log('Object that changed in bucket was rss file.')()
     return
   }
 
