@@ -12,6 +12,7 @@ provider:
 plugins:
   - serverless-google-cloudfunctions
   - serverless-plugin-typescript
+  - bookmarklet
 package:
   exclude:
     - node_modules/**

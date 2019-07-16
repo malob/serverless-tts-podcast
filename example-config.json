@@ -1,6 +1,7 @@
 {
   "gcp": {
     "credentialsPath": "",
+    "pubSubApiKey": "",
     "project": "tts-podcast-project-name",
     "bucket": "tts-podcast-bucket-name",
     "parserPubSubTopic": "url",
