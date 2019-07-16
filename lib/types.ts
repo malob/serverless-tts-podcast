@@ -7,7 +7,7 @@ export type Hash     = string
 export type Url      = string
 
 
-// Configurating file types 
+// Configurating file types
 export interface Config {
   readonly gcp: GcpConfig;
   readonly podcast: PodcastConfig;
@@ -35,6 +35,13 @@ export interface PodcastConfig {
   readonly language: string;
 }
 
+
+// Basic error type
+export interface Err {
+  message: string;
+}
+
+export type ErrConstructor = () => Err
 
 // Standin types
 // TODO: Look for actual type definition

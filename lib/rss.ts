@@ -1,4 +1,5 @@
 // Functional programming related
+import { constVoid } from 'fp-ts/lib/function'
 import { pipe } from 'fp-ts/lib/pipeable'
 import { error, log } from 'fp-ts/lib/Console'
 import { array } from 'fp-ts/lib/Array'
@@ -64,7 +65,7 @@ export const generatePodcastRss = async (event: StorageEvent): Promise<void> => 
         default                : error('Somehow and error occured that wasn\'t accounted for.')
         }
       },
-      () => {}
+      constVoid
     )))
 }
 

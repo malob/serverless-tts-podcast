@@ -5,6 +5,7 @@ import path from 'path'
 import { promisify } from 'util'
 
 // Functional programming related
+import { constVoid } from 'fp-ts/lib/function'
 import { pipe } from 'fp-ts/lib/pipeable'
 import { sequenceT } from 'fp-ts/lib/Apply'
 import { error } from 'fp-ts/lib/Console'
@@ -76,10 +77,10 @@ export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
         default                 : error('Somehow and error occured that wasn\'t accounted for.')()
         }
       },
-      () => {}
+      constVoid
     )))
     .then( () => removeWorkingDir()() )
-    .then( x  => pipe( x, fold( () => error('Error cleaning up working directory')(), () => {} )) )
+    .then( x  => pipe( x, fold( () => error('Error cleaning up working directory')(), constVoid ) ) )
 }
 
 // Helper function that creates a TaskEither to convert a string to audio.

@@ -1,8 +1,7 @@
 // Functional programming related
 import { flow } from 'fp-ts/lib/function'
 import { pipe } from 'fp-ts/lib/pipeable'
-import { log, error } from 'fp-ts/lib/Console'
-import { fold } from 'fp-ts/lib/Either'
+import { log } from 'fp-ts/lib/Console'
 import { chain, left as taskLeft, map, right as taskRight, tryCatch } from 'fp-ts/lib/TaskEither'
 
 // Google APIs
@@ -13,14 +12,14 @@ import * as htmlToText from 'html-to-text'
 import Mercury from '@postlight/mercury-parser'
 
 // Local imports
-import { conf, base64Decode } from './util'
+import { conf, base64Decode, handleEither, mkErrConstructor } from './util'
 import { PubSubMessage, Url } from './types'
 
-// Error type
-type ParserErrorType =
-  'MercuryParser'
-  | 'EmptyBody'
-  | 'PubSub'
+// Error constructors
+const MercuryError   = mkErrConstructor('Error while trying to parse webpage.')
+const EmptyBodyError = mkErrConstructor('Error, no body content returned by parser.')
+const PupSubError    = mkErrConstructor('Error, failed to send message to TTS function.')
+
 
 // Cloud function triggered by a PubSubMessage that receives a url and returns content and metadata.
 export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
@@ -32,22 +31,11 @@ export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
   // In
   log(`Parsing content of: ${url}`)()
   await pipe(
-    tryCatch( () => Mercury.parse(url), () => 'MercuryParser' as ParserErrorType ),
-    chain   ( c  => c.content ? taskRight(c) : taskLeft<ParserErrorType>('EmptyBody') ),
+    tryCatch( () => Mercury.parse(url), MercuryError ),
+    chain   ( c  => c.content ? taskRight(c) : taskLeft(EmptyBodyError()) ),
     map     ( flow(processMercuryResult, contentToBuffer) ),
-    chain   ( b  => tryCatch(() => pubsub.publish(b), () => 'PubSub' as ParserErrorType) ),
-  )()
-    .then(x => pipe( x, fold(
-      e => {
-        switch(e) {
-        case 'MercuryParser': error('Error while trying to parse webpage.')(); break
-        case 'EmptyBody'    : error('Error, no body content returned by parser.')(); break
-        case 'PubSub'       : error('Error, failed to send message to TTS function.')(); break
-        default             : error('Somehow and error occured that wasn\'t accounted for.')()
-        }
-      },
-      () => {}
-    )))
+    chain   ( b  => tryCatch(() => pubsub.publish(b), PupSubError ) )
+  )().then(handleEither)
 }
 
 // Helper function to process content into needed form
