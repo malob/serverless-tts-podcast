@@ -29,7 +29,7 @@ import rmrf from 'rimraf'
 import { DirPath, FilePath, PubSubMessage } from './types'
 import { conf, base64Decode, stringToHash, traverseArrayTE, traverseArrayWithIndexTE } from './util'
 
-// Error type 
+// Error type
 type TtsErrorType =
   'RmWorkingDir'
   | 'MkWoringDir'
@@ -38,7 +38,7 @@ type TtsErrorType =
   | 'ConcatAudioChunks'
   | 'BucketWrite'
 
-// Cloud function triggered by PubSub message that receives consent and metadata and creates TTS audio file.
+// Cloud function triggered by PubSub message that receives content and metadata and creates TTS audio file.
 export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
   // Let
   const contentData: Mercury.ParseResult = JSON.parse(base64Decode(m.data))
@@ -82,7 +82,7 @@ export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
     .then( x  => pipe( x, fold( () => error('Error cleaning up working directory')(), () => {} )) )
 }
 
-// Helper function that creates creates a TaskEither to convert a string to audio.
+// Helper function that creates a TaskEither to convert a string to audio.
 const getTtsAudio = (s: string): TaskEither<TtsErrorType, TtsResponse> => {
   // Let
   const ttsClient = new TextToSpeech.TextToSpeechClient()

@@ -50,7 +50,7 @@ export const parseWebpage = async (m: PubSubMessage): Promise<void> => {
     )))
 }
 
-// Helper function to prcoess consent into needed form
+// Helper function to prcoess content into needed form
 const processMercuryResult = (x: Mercury.ParseResult): Mercury.ParseResult => {
   // Let
   const htmlToTextOptions: HtmlToTextOptions =
