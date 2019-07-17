@@ -5,11 +5,8 @@ import path from 'path'
 import { promisify } from 'util'
 
 // Functional programming related
-import { constVoid } from 'fp-ts/lib/function'
 import { pipe } from 'fp-ts/lib/pipeable'
 import { sequenceT } from 'fp-ts/lib/Apply'
-import { error } from 'fp-ts/lib/Console'
-import { fold } from 'fp-ts/lib/Either'
 import { TaskEither, chain, map, taskEither, tryCatch } from 'fp-ts/lib/TaskEither'
 import { snd } from 'fp-ts/lib/Tuple'
 
@@ -27,17 +24,16 @@ import Mercury from '@postlight/mercury-parser'
 import rmrf from 'rimraf'
 
 // Local imports
-import { DirPath, FilePath, PubSubMessage } from './types'
-import { conf, base64Decode, stringToHash, traverseArrayTE, traverseArrayWithIndexTE } from './util'
+import { DirPath, Err, FilePath, PubSubMessage } from './types'
+import { conf, base64Decode, handleEither, mkErrConstructor, stringToHash, traverseArrayTE, traverseArrayWithIndexTE } from './util'
 
-// Error type
-type TtsErrorType =
-  'RmWorkingDir'
-  | 'MkWoringDir'
-  | 'TTSConversion'
-  | 'WriteAudioChuck'
-  | 'ConcatAudioChunks'
-  | 'BucketWrite'
+// Error constructors
+const rmWorkingDirError      = mkErrConstructor('Error while trying to remove old working directory.')
+const mkWoringDirError       = mkErrConstructor('Error creating working directory.')
+const ttsConversionError     = mkErrConstructor('Error during TTS conversion step.')
+const writeAudioChuckError   = mkErrConstructor('Error writing an audio chunk.')
+const concatAudioChunksError = mkErrConstructor('Error concatinating audio chunk.')
+const bucketWriteError       = mkErrConstructor('Error writing file to bucket.')
 
 // Cloud function triggered by PubSub message that receives content and metadata and creates TTS audio file.
 export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
@@ -47,12 +43,12 @@ export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
   const workingDirName: string           = stringToHash(contentData.url)
   const workingDirPath: DirPath          = path.join(tmpdir(), workingDirName)
 
-  const removeWorkingDir = (): TaskEither<TtsErrorType, void> =>
-    tryCatch( () => promisify(rmrf)(workingDirPath), () => 'RmWorkingDir' as TtsErrorType)
-  const createWorkingDir = (): TaskEither<TtsErrorType, void> =>
-    tryCatch( () => promisify(mkdir)(workingDirPath), () => 'MkWoringDir' as TtsErrorType )
+  const removeWorkingDir = (): TaskEither<Err, void> =>
+    tryCatch( () => promisify(rmrf)(workingDirPath), rmWorkingDirError)
+  const createWorkingDir = (): TaskEither<Err, void> =>
+    tryCatch( () => promisify(mkdir)(workingDirPath), mkWoringDirError )
   const writeAudioChunks =
-    (xs: TtsResponse[]): TaskEither<TtsErrorType, FilePath[]> =>
+    (xs: TtsResponse[]): TaskEither<Err, FilePath[]> =>
       traverseArrayWithIndexTE(xs, (i, x) => writeAudioChunk(workingDirPath, i, x))
 
   // In
@@ -65,26 +61,13 @@ export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
     chain( fps => concatAudioChunks(fps, workingDirPath) ),
     chain( fp  => createGcsObject(fp, contentData) )
   )()
-    .then(x => pipe( x, fold(
-      e => {
-        switch(e) {
-        case 'RmWorkingDir'     : error('Error while trying to remove old working directory.')(); break
-        case 'MkWoringDir'      : error('Error creating working directory.')(); break
-        case 'TTSConversion'    : error('Error during TTS conversion step.')(); break
-        case 'WriteAudioChuck'  : error('Error writing an audio chunk to disk.')(); break
-        case 'ConcatAudioChunks': error('Error concatinating audio chunk.')(); break
-        case 'BucketWrite'      : error('Error writing file to bucket.')(); break
-        default                 : error('Somehow and error occured that wasn\'t accounted for.')()
-        }
-      },
-      constVoid
-    )))
+    .then( handleEither )
     .then( () => removeWorkingDir()() )
-    .then( x  => pipe( x, fold( () => error('Error cleaning up working directory')(), constVoid ) ) )
+    .then( handleEither )
 }
 
 // Helper function that creates a TaskEither to convert a string to audio.
-const getTtsAudio = (s: string): TaskEither<TtsErrorType, TtsResponse> => {
+const getTtsAudio = (s: string): TaskEither<Err, TtsResponse> => {
   // Let
   const ttsClient = new TextToSpeech.TextToSpeechClient()
   const ttsRequest: SynthesizeSpeechRequest =
@@ -95,25 +78,25 @@ const getTtsAudio = (s: string): TaskEither<TtsErrorType, TtsResponse> => {
 
   // In
   return pipe(
-    tryCatch( () => ttsClient.synthesizeSpeech(ttsRequest), () => 'TTSConversion' as TtsErrorType ),
+    tryCatch( () => ttsClient.synthesizeSpeech(ttsRequest), ttsConversionError ),
     map     ( ([x]) => x )
   )
 }
 
 // Helper function that creates a TaskEither to write an audio chunk to disk
-const writeAudioChunk = (d: DirPath, i: number, a: TtsResponse): TaskEither<TtsErrorType, FilePath> => {
+const writeAudioChunk = (d: DirPath, i: number, a: TtsResponse): TaskEither<Err, FilePath> => {
   // Let
   const fp: FilePath = path.join(d, `${i}.mp3`)
 
   // In
   return pipe(
-    tryCatch( () => promisify(writeFile)(fp, a.audioContent, 'binary'), () => 'WriteAudioChuck' as TtsErrorType ),
+    tryCatch( () => promisify(writeFile)(fp, a.audioContent, 'binary'), writeAudioChuckError ),
     map     ( () => fp)
   )
 }
 
 // Helper function that creates a TaskEither that concatenates audio chunks and writes the file to disk.
-const concatAudioChunks = (fps: FilePath[], d: DirPath): TaskEither<TtsErrorType, FilePath> => {
+const concatAudioChunks = (fps: FilePath[], d: DirPath): TaskEither<Err, FilePath> => {
   if (fps.length == 1) {
     return taskEither.of(fps[0])
   }
@@ -132,12 +115,12 @@ const concatAudioChunks = (fps: FilePath[], d: DirPath): TaskEither<TtsErrorType
     })
 
     // In
-    return tryCatch( () => ffmpegPromise, () => 'ConcatAudioChunks' as TtsErrorType )
+    return tryCatch( () => ffmpegPromise, concatAudioChunksError )
   }
 }
 
 // Helper function that creates a TaskEither that writes the audio file to GCS
-const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TaskEither<TtsErrorType, UploadResponse> => {
+const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TaskEither<Err, UploadResponse> => {
   // Let
   const bucket = (new Storage()).bucket(conf.gcp.bucket)
   const hash = stringToHash(c.url)
@@ -158,5 +141,5 @@ const createGcsObject = (fp: FilePath, c: Mercury.ParseResult): TaskEither<TtsEr
     }
 
   // In
-  return tryCatch( () => bucket.upload(fp, objectOptions), () => 'BucketWrite' as TtsErrorType )
+  return tryCatch( () => bucket.upload(fp, objectOptions), bucketWriteError )
 }

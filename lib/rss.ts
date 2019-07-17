@@ -1,9 +1,7 @@
 // Functional programming related
-import { constVoid } from 'fp-ts/lib/function'
 import { pipe } from 'fp-ts/lib/pipeable'
-import { error, log } from 'fp-ts/lib/Console'
+import { log } from 'fp-ts/lib/Console'
 import { array } from 'fp-ts/lib/Array'
-import { fold } from 'fp-ts/lib/Either'
 import { TaskEither, chain, map, tryCatch } from 'fp-ts/lib/TaskEither'
 
 // Google APIs
@@ -14,14 +12,13 @@ import { GetFileMetadataResponse, GetFilesResponse, Storage } from '@google-clou
 import Podcast from 'podcast'
 
 // Local imports
-import { StorageEvent } from './types'
-import { conf, traverseArrayTE } from './util'
+import { Err, StorageEvent } from './types'
+import { conf, handleEither, mkErrConstructor, traverseArrayTE } from './util'
 
-// Error type
-type RssGenErrorType =
-  'GetBucketObjects'
-  | 'GetObjectMeta'
-  | 'RSSFileWrite'
+// Error constructors
+const getBucketObjectsError = mkErrConstructor('Error retrieving objects from bucket.')
+const getObjectMetaError    = mkErrConstructor('Error retrieving object metadata.')
+const rssFileWriteError     = mkErrConstructor('Error writing RSS feed file to bucket.')
 
 // Cloud function triggered by bucket update that generate the podcast RSS.
 export const generatePodcastRss = async (event: StorageEvent): Promise<void> => {
@@ -35,38 +32,28 @@ export const generatePodcastRss = async (event: StorageEvent): Promise<void> => 
     , ttl    : 1
     }
 
-  const getFilesFromBucket = (): TaskEither<RssGenErrorType, GetFilesResponse> =>
-    tryCatch( () => bucket.getFiles(), () => 'GetBucketObjects' as RssGenErrorType )
-  const getFilesMetadata = ([r]: GetFilesResponse): TaskEither<RssGenErrorType, GetFileMetadataResponse[]> =>
-    traverseArrayTE(r, f => tryCatch( () => f.getMetadata(), () => 'GetObjectMeta' as RssGenErrorType))
-  const writeFeedToBucket = (f: string): TaskEither<RssGenErrorType, void> =>
-    tryCatch( () => bucket.file(rssFileName).save(f, rssFileOptions), () => 'RSSFileWrite' as RssGenErrorType)
+  const getFilesFromBucket = (): TaskEither<Err, GetFilesResponse> =>
+    tryCatch( () => bucket.getFiles(), getBucketObjectsError )
+  const getFilesMetadata = ([r]: GetFilesResponse): TaskEither<Err, GetFileMetadataResponse[]> =>
+    traverseArrayTE( r, f => tryCatch( () => f.getMetadata(), getObjectMetaError) )
+  const writeFeedToBucket = (f: string): TaskEither<Err, void> =>
+    tryCatch( () => bucket.file(rssFileName).save(f, rssFileOptions), rssFileWriteError )
 
   // In
   if (event.name == rssFileName) {
     log('Object that changed in bucket was rss file.')()
     return
   }
-
-  await pipe(
-    getFilesFromBucket(),
-    chain( getFilesMetadata ),
-    map  ( ms => array.filter(ms, ([x]) => x.contentType == 'audio/mpeg') ),
-    map  ( ms => ms.map(createRssItem) ),
-    map  ( is => (new Podcast(feedOptions, is)).buildXml(true) ),
-    chain( writeFeedToBucket )
-  )()
-    .then(x => pipe( x, fold(
-      e => {
-        switch(e) {
-        case 'GetBucketObjects': error('Error retriving objects from bucket.')(); break
-        case 'GetObjectMeta'   : error('Error retriving object metadata.')(); break
-        case 'RSSFileWrite'    : error('Error writing RSS feed file to bucket.')(); break
-        default                : error('Somehow and error occured that wasn\'t accounted for.')
-        }
-      },
-      constVoid
-    )))
+  else {
+    await pipe(
+      getFilesFromBucket(),
+      chain( getFilesMetadata ),
+      map  ( ms => array.filter(ms, ([x]) => x.contentType == 'audio/mpeg') ),
+      map  ( ms => ms.map(createRssItem) ),
+      map  ( is => (new Podcast(feedOptions, is)).buildXml(true) ),
+      chain( writeFeedToBucket )
+    )().then(handleEither)
+  }
 }
 
 // Helper function to create each item of RSS feed
