@@ -12,7 +12,8 @@ provider:
 plugins:
   - serverless-google-cloudfunctions
   - serverless-plugin-typescript
-  - bookmarklet
+  - tts-podcast-info
+
 package:
   exclude:
     - node_modules/**
