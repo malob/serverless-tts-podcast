@@ -7,6 +7,7 @@
     "lib": ["es2018"],
     "rootDir": "./",
 
+    "allowJs": true,
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,

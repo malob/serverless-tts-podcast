@@ -1,6 +1,6 @@
 service: text-to-podcast
 
-custom: ${file(./config.json)}
+custom: ${file(./config.js)}
 
 provider:
   name: google

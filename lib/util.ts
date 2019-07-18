@@ -6,9 +6,8 @@ import { error } from 'fp-ts/lib/Console'
 import { Either, fold } from 'fp-ts/lib/Either'
 import { taskEither } from 'fp-ts/lib/TaskEither'
 import { Config, Err, ErrConstructor } from './types'
-import * as config from '../config.json'
 
-export const conf = config as Config
+export const conf: Config = require('../config')()
 export const base64Decode = (s: string): string => Buffer.from(s, 'base64').toString()
 export const mkErrConstructor = (m: string): ErrConstructor => () => { return {message: m} }
 export const handleEither = (x: Either<Err, unknown>): void => pipe(x, fold(e => error(e.message)(), constVoid))

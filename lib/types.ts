@@ -17,6 +17,7 @@ export interface GcpConfig {
   readonly credentialsPath: FilePath;
   readonly project: string;
   readonly bucket: string;
+  readonly bucketUrl: Url;
   readonly parserPubSubTopic: string;
   readonly ttsPubSubTopic: string;
   readonly ttsCharLimit: number;
@@ -33,6 +34,7 @@ export interface PodcastConfig {
   readonly siteUrl: Url;
   readonly author: string;
   readonly language: string;
+  readonly rssFileName: string;
 }
 
 
