@@ -47,9 +47,8 @@ export const textToSpeech = async (m: PubSubMessage): Promise<void> => {
     tryCatch( () => promisify(rmrf)(workingDirPath), rmWorkingDirError)
   const createWorkingDir = (): TaskEither<Err, void> =>
     tryCatch( () => promisify(mkdir)(workingDirPath), mkWoringDirError )
-  const writeAudioChunks =
-    (xs: TtsResponse[]): TaskEither<Err, FilePath[]> =>
-      traverseArrayWithIndexTE(xs, (i, x) => writeAudioChunk(workingDirPath, i, x))
+  const writeAudioChunks = (xs: TtsResponse[]): TaskEither<Err, FilePath[]> =>
+    traverseArrayWithIndexTE(xs, (i, x) => writeAudioChunk(workingDirPath, i, x))
 
   // In
   await pipe(
